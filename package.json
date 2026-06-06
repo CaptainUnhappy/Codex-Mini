@@ -11,5 +11,6 @@
   "private": true,
   "name": "codex-mini",
   "version": "3.0.5",
-  "description": "Local phone-to-Codex/Mac typing bridge"
+  "description": "Local phone-to-Codex/Mac typing bridge",
+  "license": "SEE LICENSE IN LICENSE"
 }
