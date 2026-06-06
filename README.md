@@ -47,6 +47,10 @@ QQ 群：**760669553**
 
 欢迎加入群里交流使用问题、反馈 bug、提出功能建议。后续有最新版本也会在群里及时沟通。
 
+## 社区项目 / Windows 版本
+
+- [atuizz/codex-max](https://github.com/atuizz/codex-max)：这是社区开发者基于 Codex Mini 做的 Windows 项目，面向需要在 Windows 上使用类似手机到 Codex Desktop 控制能力的用户。如果你需要 Windows 版本，可以参考这个项目。
+
 ## 安装与使用
 
 1. 在 Releases 页面下载带版本号的 `Codex.Mini.Beta.v3.0.5.dmg`
