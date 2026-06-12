@@ -13,6 +13,13 @@ const APP_NAME = process.env.CODEX_MINI_APP_NAME || 'Codex Mini';
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN = process.env.MOBILE_TYPER_TOKEN || crypto.randomBytes(12).toString('base64url');
+const RELAY_URL = process.env.CODEX_MINI_RELAY_URL || '';
+const RELAY_PUBLIC_BASE = String(process.env.CODEX_MINI_RELAY_PUBLIC_BASE || '').replace(/\/+$/, '');
+const RELAY_DEVICE_ID = process.env.CODEX_MINI_RELAY_DEVICE_ID || os.hostname();
+const RELAY_SECRET = process.env.CODEX_MINI_RELAY_SECRET || '';
+const RELAY_PASSPHRASE = process.env.CODEX_MINI_RELAY_PASSPHRASE || '';
+const RELAY_REQUEST_TIMEOUT_MS = Number(process.env.CODEX_MINI_RELAY_REQUEST_TIMEOUT_MS || 70 * 1000);
+const RELAY_RESPONSE_MAX_BYTES = Number(process.env.CODEX_MINI_RELAY_RESPONSE_MAX_BYTES || 32 * 1024 * 1024);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = Number(process.env.CODEX_MINI_MAX_BODY_BYTES || 28 * 1024 * 1024);
 const MAX_TEXT_LENGTH = 8000;
@@ -549,8 +556,28 @@ function resolveFailureTextForTurn(threadId, options = {}) {
   return '';
 }
 
+function isCodexInternalUserMessage(value) {
+  const text = normalizeHistoryText(value).replace(/\s+/g, ' ');
+  return /^The following is the Codex agent history\b/i.test(text) ||
+    /^The following is the Codex agent\b.{0,600}\b(?:request action you are assessing|approval assessment|untrusted evidence)\b/i.test(text);
+}
+
+function isCodexInternalSessionMeta(meta = {}) {
+  const source = meta && typeof meta === 'object' ? meta.source : null;
+  const subagent = source && typeof source === 'object' ? source.subagent : null;
+  const subagentName = subagent && typeof subagent === 'object'
+    ? String(subagent.other || subagent.name || subagent.kind || '')
+    : '';
+  const baseInstructions = normalizeHistoryText(meta && meta.base_instructions && meta.base_instructions.text || '');
+  return (
+    String(meta && meta.thread_source || '').toLowerCase() === 'subagent' &&
+    /^(?:guardian|approval|approvals?[-_\s]?reviewer)$/i.test(subagentName)
+  ) || /judging one planned coding-agent action|request action you are assessing|approval assessment/i.test(baseInstructions);
+}
+
 function cleanUserHistoryText(value) {
   const text = normalizeHistoryText(value);
+  if (isCodexInternalUserMessage(text)) return '';
   const marker = '## My request for Codex:';
   const index = text.indexOf(marker);
   if (index >= 0) return normalizeHistoryText(text.slice(index + marker.length));
@@ -1030,6 +1057,7 @@ function listCodexThreads(limit = 80) {
     try {
       const stat = fs.statSync(file);
       const meta = readSessionMeta(file);
+      if (isCodexInternalSessionMeta(meta)) continue;
       const runtime = quickCodexRuntimeFromFile(file, stat);
       const project = classifyThreadProject(meta.cwd || '');
       const existing = byId.get(id) || { id, name: '', updatedAt: '' };
@@ -1966,6 +1994,179 @@ function parseCookies(header) {
   return cookies;
 }
 
+const RELAY_HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+let relayReconnectTimer = null;
+let relayReconnectDelayMs = 1000;
+
+function relayHmac(value) {
+  return crypto.createHmac('sha256', RELAY_SECRET).update(String(value || '')).digest('base64url');
+}
+
+function relayTunnelUrl() {
+  const timestamp = Date.now();
+  const nonce = crypto.randomBytes(12).toString('base64url');
+  const signature = relayHmac(`${RELAY_DEVICE_ID}.${timestamp}.${nonce}`);
+  const url = new URL(RELAY_URL);
+  url.searchParams.set('deviceId', RELAY_DEVICE_ID);
+  url.searchParams.set('timestamp', String(timestamp));
+  url.searchParams.set('nonce', nonce);
+  url.searchParams.set('signature', signature);
+  return url.toString();
+}
+
+function relayLoginUrl() {
+  if (!RELAY_PUBLIC_BASE) return '';
+  const base = RELAY_PUBLIC_BASE.replace(/\/+$/, '');
+  if (!RELAY_PASSPHRASE) return `${base}/`;
+  return `${base}/#k=${encodeURIComponent(RELAY_PASSPHRASE)}`;
+}
+
+function printRelayQr() {
+  const url = relayLoginUrl();
+  if (!url) return;
+  console.log('Relay phone URL:');
+  console.log(`  ${url}`);
+  if (!RELAY_PASSPHRASE) return;
+  try {
+    const qrcode = require('qrcode-terminal');
+    qrcode.generate(url, { small: true });
+  } catch {
+    console.log('Install qrcode-terminal to print a terminal QR code.');
+  }
+}
+
+function relayRequestPath(value) {
+  const raw = String(value || '/');
+  try {
+    const parsed = new URL(raw, 'http://relay.local');
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return raw.startsWith('/') ? raw : '/';
+  }
+}
+
+function relayRequestHeaders(headers, bodyLength) {
+  const out = {};
+  for (const [key, value] of Object.entries(headers || {})) {
+    const lower = key.toLowerCase();
+    if (RELAY_HOP_BY_HOP_HEADERS.has(lower)) continue;
+    if (lower === 'cookie') continue;
+    out[lower] = Array.isArray(value) ? value.join(', ') : String(value);
+  }
+  out['x-mobile-typer-token'] = TOKEN;
+  if (bodyLength > 0) out['content-length'] = String(bodyLength);
+  return out;
+}
+
+function forwardRelayRequest(message) {
+  return new Promise((resolve, reject) => {
+    const body = Buffer.from(String(message.bodyBase64 || ''), 'base64');
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: PORT,
+      method: String(message.method || 'GET').toUpperCase(),
+      path: relayRequestPath(message.path),
+      headers: relayRequestHeaders(message.headers, body.length),
+      timeout: RELAY_REQUEST_TIMEOUT_MS,
+    }, response => {
+      let size = 0;
+      const chunks = [];
+      response.on('data', chunk => {
+        size += chunk.length;
+        if (size > RELAY_RESPONSE_MAX_BYTES) {
+          req.destroy(Object.assign(new Error('relay response too large'), { code: 'RELAY_RESPONSE_TOO_LARGE' }));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        const responseBody = Buffer.concat(chunks);
+        resolve({
+          status: response.statusCode || 502,
+          headers: response.headers || {},
+          bodyBase64: responseBody.toString('base64'),
+        });
+      });
+    });
+    req.on('timeout', () => req.destroy(Object.assign(new Error('relay local request timed out'), { code: 'LOCAL_TIMEOUT' })));
+    req.on('error', reject);
+    if (body.length) req.write(body);
+    req.end();
+  });
+}
+
+async function handleRelayTunnelMessage(ws, raw) {
+  let message = null;
+  try {
+    message = JSON.parse(String(raw || ''));
+  } catch {
+    return;
+  }
+  if (!message || message.type !== 'request' || !message.id) return;
+  try {
+    const response = await forwardRelayRequest(message);
+    ws.send(JSON.stringify({
+      type: 'response',
+      id: message.id,
+      status: response.status,
+      headers: response.headers,
+      bodyBase64: response.bodyBase64,
+    }));
+  } catch (error) {
+    ws.send(JSON.stringify({
+      type: 'error',
+      id: message.id,
+      code: error.code || 'LOCAL_REQUEST_FAILED',
+      message: error.message || 'Local request failed.',
+    }));
+  }
+}
+
+function startRelayClient() {
+  if (!RELAY_URL || !RELAY_SECRET || !RELAY_DEVICE_ID) return;
+  let WebSocket = null;
+  try {
+    WebSocket = require('ws');
+  } catch (error) {
+    console.warn(`Relay disabled: install dependencies first (${error.message}).`);
+    return;
+  }
+
+  const connect = () => {
+    const ws = new WebSocket(relayTunnelUrl(), { handshakeTimeout: 10000 });
+    ws.on('open', () => {
+      relayReconnectDelayMs = 1000;
+      console.log(`Relay connected as ${RELAY_DEVICE_ID}.`);
+    });
+    ws.on('message', raw => handleRelayTunnelMessage(ws, raw));
+    ws.on('close', () => {
+      if (relayReconnectTimer) return;
+      const delay = relayReconnectDelayMs;
+      relayReconnectDelayMs = Math.min(relayReconnectDelayMs * 2, 30000);
+      relayReconnectTimer = setTimeout(() => {
+        relayReconnectTimer = null;
+        connect();
+      }, delay);
+    });
+    ws.on('error', error => {
+      console.warn(`Relay connection error: ${error.message}`);
+    });
+  };
+
+  connect();
+}
+
 function cleanupRecentSendRequests() {
   const cutoff = Date.now() - RECENT_SEND_TTL_MS;
   for (const [id, entry] of recentSendRequests) {
@@ -2772,12 +2973,14 @@ function getLanApiBases() {
 
 function handleClientConfig(req, res) {
   if (!isAuthorized(req)) return json(res, 401, { ok: false, code: 'UNAUTHORIZED', message: '访问令牌不正确。' });
+  const relayApiBases = RELAY_PUBLIC_BASE ? [RELAY_PUBLIC_BASE] : [];
   return json(res, 200, {
     ok: true,
     service: 'codex-mini',
     appName: APP_NAME,
-    localOnly: true,
+    localOnly: relayApiBases.length === 0,
     localApiBases: getLanApiBases(),
+    relayApiBases,
     modelOptions: readModelCatalogOptions(),
   });
 }
@@ -2859,7 +3062,9 @@ server.listen(PORT, HOST, () => {
   console.log('\nCodex mini is running.');
   console.log('Keep this terminal open, put your Mac cursor where you want text, then open one of these URLs on your phone:');
   for (const url of urls) console.log(`  ${url}`);
+  if (RELAY_PUBLIC_BASE) printRelayQr();
   console.log('\nTip: phone and Mac must be on the same Wi‑Fi. Press Ctrl+C to stop.\n');
+  startRelayClient();
 });
 
 process.on('exit', cleanupKeepAwake);

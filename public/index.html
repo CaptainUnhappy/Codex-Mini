@@ -1697,6 +1697,10 @@
     const token = queryToken || localStorage.getItem('codexMini.token') || '';
     function detectBasePath(pathname) {
       if (pathname === '/codex-mini' || pathname.startsWith('/codex-mini/')) return '/codex-mini';
+      if (pathname === '/codex' || pathname.startsWith('/codex/')) return '/codex';
+      if (pathname === '/mini' || pathname.startsWith('/mini/')) return '/mini';
+      const relayMatch = pathname.match(/^\/r\/[^/]+(?:\/|$)/);
+      if (relayMatch) return relayMatch[0].replace(/\/$/, '');
       return '';
     }
     const basePath = detectBasePath(location.pathname);
@@ -2465,13 +2469,13 @@
       updateTitleDotState();
     }
     function routeTextForKind(kind) {
-      return '本地';
+      return kind === 'relay' ? '外网' : '本地';
     }
     function routeIconMarkup(kind) {
       if (kind === 'local') {
         return '<path d="m3 11 9-7 9 7"></path><path d="M5 10v9h14v-9"></path><path d="M9 19v-6h6v6"></path>';
       }
-      return '<path d="m3 11 9-7 9 7"></path><path d="M5 10v9h14v-9"></path><path d="M9 19v-6h6v6"></path>';
+      return '<path d="M17.5 19H9a6 6 0 1 1 5.6-8.14A4.5 4.5 0 1 1 17.5 19Z"></path>';
     }
     const PIN_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V4h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1z"></path></svg>';
     const ARCHIVE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="5" x="2" y="3" rx="1"></rect><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path><path d="M10 12h4"></path></svg>';
@@ -2482,10 +2486,10 @@
     threadActionPinToggleIcon.innerHTML = PIN_ICON;
     function updateRouteBadge() {
       const text = routeTextForKind(activeApiKind);
-      routeBadge.className = `route-badge is-local${routeBadgeCompact ? ' is-compact' : ''}`;
+      routeBadge.className = `route-badge is-${activeApiKind === 'relay' ? 'relay' : 'local'}${routeBadgeCompact ? ' is-compact' : ''}`;
       routeIcon.innerHTML = routeIconMarkup(activeApiKind);
       routeText.textContent = text;
-      routeBadge.title = `当前线路：${text} · Mac 局域网；点击切换显示模式`;
+      routeBadge.title = `当前线路：${text}${activeApiKind === 'relay' ? ' · 自建中继' : ' · Mac 局域网'}；点击切换显示模式`;
       routeBadge.setAttribute('aria-label', routeBadge.title);
     }
     function toggleRouteBadgeCompact() {
@@ -2494,7 +2498,8 @@
       updateRouteBadge();
     }
     function routeLabel(candidate) {
-      return '本地';
+      if (candidate?.kind === 'relay') return candidate.label || '外网';
+      return candidate?.label || '本地';
     }
     function makeCandidate(id, baseUrl, label, kind, priority) {
       const normalized = normalizeBaseUrl(baseUrl);
@@ -2510,14 +2515,14 @@
       }
       apiCandidates = [...byBase.values()].sort((a, b) => a.priority - b.priority);
       try {
-        localStorage.setItem(ROUTE_STORAGE_KEY, JSON.stringify(apiCandidates.filter(item => item.kind !== 'current')));
+        localStorage.setItem(ROUTE_STORAGE_KEY, JSON.stringify(apiCandidates.filter(item => item.id !== 'current')));
       } catch {}
       if (!apiCandidates.some(item => item.baseUrl === activeApiBase)) {
         const first = apiCandidates[0];
         if (first) {
           activeApiBase = first.baseUrl;
           activeApiLabel = routeLabel(first);
-          activeApiKind = 'local';
+          activeApiKind = first.kind || 'local';
           updateRouteBadge();
         }
       }
@@ -2546,7 +2551,7 @@
       }
     }
     async function probeApiCandidate(candidate, timeoutMs = 2500) {
-      if (!candidate?.baseUrl || !token) return false;
+      if (!candidate?.baseUrl) return false;
       const params = new URLSearchParams({ token, t: String(Date.now()) });
       try {
         const response = await fetchWithTimeout(`${candidate.baseUrl}/codex/health?${params}`, { cache: 'no-store' }, timeoutMs);
@@ -2569,7 +2574,7 @@
           const changed = activeApiBase !== candidate.baseUrl;
           activeApiBase = candidate.baseUrl;
           activeApiLabel = routeLabel(candidate);
-          activeApiKind = 'local';
+          activeApiKind = candidate.kind || 'local';
           updateRouteBadge();
           if (changed && !quiet) setNotice(`网络已自动切换到${routeTextForKind(activeApiKind)}线路`, 'ok');
           return candidate;
@@ -2589,7 +2594,8 @@
         const response = await fetchWithTimeout(`${currentApiBase}/codex/config?${params}`, { cache: 'no-store' }, 5000);
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || '读取线路配置失败');
-        localOnlyMode = true;
+        const relayApiBases = Array.isArray(data.relayApiBases) ? data.relayApiBases.map(normalizeBaseUrl).filter(Boolean) : [];
+        localOnlyMode = data.localOnly !== false;
         if (Array.isArray(data.modelOptions) && data.modelOptions.length) {
           modelMenuOptions = data.modelOptions
             .filter(item => item && item.id)
@@ -2601,9 +2607,12 @@
             }));
           renderModelBadge(currentModelInfo);
         }
+        const currentIsRelay = relayApiBases.includes(currentApiBase);
         const configured = [
-          ...baseCandidates,
+          makeCandidate('current', currentApiBase, currentIsRelay ? '外网' : '本地', currentIsRelay ? 'relay' : 'local', currentIsRelay ? 20 : 0),
+          ...readStoredApiCandidates(),
           ...(data.localApiBases || []).map((base, index) => makeCandidate(`local-${index}`, base, '本地', 'local', 1 + index)),
+          ...relayApiBases.map((base, index) => makeCandidate(`relay-${index}`, base, '外网', 'relay', 20 + index)),
         ].filter(Boolean);
         mergeApiCandidates(configured);
         if (localOnlyMode) {
@@ -2634,10 +2643,22 @@
     async function fetchApi(path, options = {}) {
       const timeoutMs = options.apiTimeoutMs || 12000;
       const requestOptions = { ...options };
+      const quiet = Boolean(requestOptions.routeSwitchQuiet);
+      const retryProbeTimeoutMs = requestOptions.retryProbeTimeoutMs || 1000;
       delete requestOptions.apiTimeoutMs;
       delete requestOptions.routeSwitchQuiet;
       delete requestOptions.retryProbeTimeoutMs;
-      return fetchWithTimeout(apiUrl(path), requestOptions, timeoutMs);
+      try {
+        return await fetchWithTimeout(apiUrl(path), requestOptions, timeoutMs);
+      } catch (error) {
+        const previousBase = activeApiBase;
+        const next = await chooseApiCandidate({ preferLocal: activeApiKind !== 'local', excludeBase: previousBase, quiet: true, probeTimeoutMs: retryProbeTimeoutMs });
+        if (next && next.baseUrl !== previousBase) {
+          if (!quiet) setNotice(`网络已自动切换到${routeTextForKind(activeApiKind)}线路`, 'ok');
+          return fetchWithTimeout(apiUrl(path), requestOptions, timeoutMs);
+        }
+        throw error;
+      }
     }
 
 
@@ -2691,15 +2712,13 @@
       }
     }
     async function ensureRouteForSend() {
-      return;
       const active = apiCandidates.find(item => item.baseUrl === activeApiBase);
-      if (!active || active.kind !== 'local') return;
+      if (!active) return;
       if (await probeApiCandidate(active, 700)) return;
       await chooseApiCandidate({ preferLocal: false, excludeBase: active.baseUrl, quiet: true, probeTimeoutMs: 900 });
     }
     function startRouteMonitor() {
       window.setInterval(async () => {
-        return;
         if (document.hidden || routeMonitorBusy) return;
         routeMonitorBusy = true;
         const active = apiCandidates.find(item => item.baseUrl === activeApiBase);
