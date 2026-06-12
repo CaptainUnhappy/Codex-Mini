@@ -10,6 +10,9 @@ const { spawn } = require('child_process');
 const { URL } = require('url');
 
 const APP_NAME = process.env.CODEX_MINI_APP_NAME || 'Codex Mini';
+const IS_MAC = process.platform === 'darwin';
+const IS_WINDOWS = process.platform === 'win32';
+const WINDOWS_CODEX_APP_ID = process.env.CODEX_MINI_WINDOWS_CODEX_APP_ID || 'OpenAI.Codex_2p2nqsd0c76g0!App';
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN = process.env.MOBILE_TYPER_TOKEN || crypto.randomBytes(12).toString('base64url');
@@ -2196,8 +2199,121 @@ function runProcess(command, args, input) {
   });
 }
 
+function powerShellSingleQuote(value) {
+  return `'${String(value || '').replace(/'/g, "''")}'`;
+}
+
+function windowsPowerShellPath() {
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+  return path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+async function runWindowsPowerShell(script) {
+  const filePath = path.join(os.tmpdir(), `codex-mini-win-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.ps1`);
+  fs.writeFileSync(filePath, String(script || ''), 'utf8');
+  try {
+    return await runProcess(windowsPowerShellPath(), ['-NoProfile', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', filePath]);
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+}
+
+async function windowsActivateCodexWindow({ startIfNeeded = true } = {}) {
+  const appId = powerShellSingleQuote(`shell:AppsFolder\\${WINDOWS_CODEX_APP_ID}`);
+  await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+$shell = New-Object -ComObject WScript.Shell
+if (-not $shell.AppActivate('Codex')) {
+  if (${startIfNeeded ? '$true' : '$false'}) {
+    Start-Process ${appId}
+    Start-Sleep -Milliseconds 900
+  }
+}
+$activated = $false
+for ($i = 0; $i -lt 12; $i++) {
+  if ($shell.AppActivate('Codex')) {
+    $activated = $true
+    break
+  }
+  Start-Sleep -Milliseconds 250
+}
+if (-not $activated) {
+  throw 'Codex window could not be activated. Open Codex once, then retry.'
+}
+`);
+  await delay(CODEX_APP_FOCUS_SETTLE_MS);
+}
+
+async function windowsClickCodexComposer() {
+  await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexMiniWin32 {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extra);
+}
+"@
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.AppActivate('Codex')
+Start-Sleep -Milliseconds 120
+$proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+  Where-Object { $_.MainWindowHandle -ne 0 } |
+  Sort-Object StartTime -Descending |
+  Select-Object -First 1
+if (-not $proc) { throw 'Codex window handle not found after activation.' }
+[void][CodexMiniWin32]::ShowWindow($proc.MainWindowHandle, 9)
+[void][CodexMiniWin32]::SetForegroundWindow($proc.MainWindowHandle)
+Start-Sleep -Milliseconds 120
+$rect = New-Object CodexMiniWin32+RECT
+if (-not [CodexMiniWin32]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'Could not read Codex window bounds.' }
+$width = [Math]::Max(1, $rect.Right - $rect.Left)
+$height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+$x = [int]($rect.Left + ($width / 2))
+$bottomOffset = [Math]::Max(72, [Math]::Min(150, [int]($height * 0.11)))
+$y = [int]($rect.Bottom - $bottomOffset)
+[void][CodexMiniWin32]::SetCursorPos($x, $y)
+[CodexMiniWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 40
+[CodexMiniWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+`);
+  await delay(CODEX_CLICK_SETTLE_MS);
+}
+
+async function windowsSendKeys(keys) {
+  await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.SendKeys]::SendWait(${powerShellSingleQuote(keys)})
+`);
+}
+
+function windowsShortcutKeys(key, modifiers = []) {
+  const prefix = modifiers.map(modifier => {
+    const item = String(modifier || '').toLowerCase();
+    if (item === 'command' || item === 'cmd' || item === 'control' || item === 'ctrl') return '^';
+    if (item === 'shift') return '+';
+    if (item === 'option' || item === 'alt') return '%';
+    return '';
+  }).join('');
+  return `${prefix}${String(key || '')}`;
+}
+
 function explainAutomationError(error) {
   const raw = String(error && (error.stderr || error.message) || '');
+  if (IS_WINDOWS) {
+    return {
+      code: 'WINDOWS_AUTOMATION_FAILED',
+      message: 'Windows 自动粘贴失败。请确认 Codex 窗口已打开，且 Codex Mini 服务和 Codex 没有一个以管理员身份运行、另一个不是管理员身份运行。',
+      detail: raw,
+    };
+  }
   const lower = raw.toLowerCase();
   if (lower.includes('assistive') || lower.includes('accessibility') || lower.includes('-25211') || lower.includes('not allowed') || lower.includes('not authorized')) {
     return {
@@ -2216,6 +2332,13 @@ function explainAutomationError(error) {
 function explainTargetError(error, target) {
   const raw = String(error && (error.stderr || error.message) || '');
   if (target === 'codex') {
+    if (IS_WINDOWS) {
+      return {
+        code: 'CODEX_FOCUS_FAILED',
+        message: '已经收到文字，但没能自动聚焦 Codex 输入框。请确认 Codex 窗口已打开；如果 Codex 或启动 bat 是管理员权限，请让两者使用相同权限后重启再试。',
+        detail: raw,
+      };
+    }
     return {
       code: 'CODEX_FOCUS_FAILED',
       message: '已经收到文字，但没能自动聚焦 Codex 输入框。请确认 Codex 正在运行，且当前终端已开启辅助功能权限。',
@@ -2226,6 +2349,21 @@ function explainTargetError(error, target) {
 }
 
 async function copyTextToClipboard(text) {
+  if (IS_WINDOWS) {
+    const filePath = path.join(os.tmpdir(), `codex-mini-clipboard-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.txt`);
+    fs.writeFileSync(filePath, String(text || ''), 'utf8');
+    try {
+      await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+$text = [System.IO.File]::ReadAllText(${powerShellSingleQuote(filePath)}, [System.Text.Encoding]::UTF8)
+Set-Clipboard -Value $text
+`);
+    } finally {
+      fs.rmSync(filePath, { force: true });
+    }
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Clipboard automation is not supported on ${process.platform}.`);
   // pbcopy can silently write to no visible pasteboard when this service runs
   // as a LaunchAgent. AppleScript targets the logged-in user's desktop
   // pasteboard, matching the existing image clipboard path. Use a temp UTF-8
@@ -2268,6 +2406,13 @@ function hasFreshCodexThreadActivation(threadId) {
 async function focusTarget(target, threadId = '', options = {}) {
   if (target !== 'codex') return;
 
+  if (IS_WINDOWS) {
+    await activateCodexThread(threadId, { allowCached: Boolean(options.assumeThreadSynced) });
+    if (!options.skipComposerClick) await windowsClickCodexComposer();
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Codex focus automation is not supported on ${process.platform}.`);
+
   await activateCodexThread(threadId, { allowCached: Boolean(options.assumeThreadSynced) });
   if (options.skipComposerClick) return;
 
@@ -2288,6 +2433,25 @@ async function focusTarget(target, threadId = '', options = {}) {
 }
 
 async function activateCodexThread(threadId = '', options = {}) {
+  if (IS_WINDOWS) {
+    if (options.allowCached && hasFreshCodexThreadActivation(threadId)) {
+      await windowsActivateCodexWindow();
+      return;
+    }
+    const deepLink = codexThreadDeepLink(threadId);
+    if (deepLink) {
+      await runWindowsPowerShell(`Start-Process ${powerShellSingleQuote(deepLink)}`);
+      await delay(CODEX_DEEPLINK_SETTLE_MS);
+    } else {
+      await runWindowsPowerShell(`Start-Process ${powerShellSingleQuote(`shell:AppsFolder\\${WINDOWS_CODEX_APP_ID}`)}`);
+      await delay(CODEX_APP_FOCUS_SETTLE_MS + 450);
+    }
+    await windowsActivateCodexWindow();
+    if (isCodexThreadId(threadId)) lastCodexThreadActivation = { threadId, at: Date.now() };
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Codex activation is not supported on ${process.platform}.`);
+
   if (options.allowCached && hasFreshCodexThreadActivation(threadId)) {
     await runProcess('open', ['-b', 'com.openai.codex']);
     await delay(CODEX_APP_FOCUS_SETTLE_MS);
@@ -2308,6 +2472,14 @@ async function activateCodexThread(threadId = '', options = {}) {
 
 async function activateNewCodexThread(cwd = '') {
   const deepLink = codexNewThreadDeepLink(cwd);
+  if (IS_WINDOWS) {
+    await runWindowsPowerShell(`Start-Process ${powerShellSingleQuote(deepLink)}`);
+    await delay(CODEX_DEEPLINK_SETTLE_MS + 180);
+    await windowsActivateCodexWindow();
+    lastCodexThreadActivation = { threadId: '', at: 0 };
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Codex activation is not supported on ${process.platform}.`);
   await runProcess('open', [deepLink]);
   await delay(CODEX_DEEPLINK_SETTLE_MS + 180);
   await runProcess('open', ['-b', 'com.openai.codex']);
@@ -2327,6 +2499,11 @@ async function activateNewProjectlessCodexThread(anchorThreadId = '') {
     await delay(CODEX_DEEPLINK_SETTLE_MS + 180);
   } else {
     await activateNewCodexThread('');
+  }
+  if (IS_WINDOWS) {
+    await windowsActivateCodexWindow();
+    lastCodexThreadActivation = { threadId: '', at: 0 };
+    return;
   }
   await runProcess('open', ['-b', 'com.openai.codex']);
   await delay(CODEX_APP_FOCUS_SETTLE_MS);
@@ -2480,6 +2657,17 @@ function appleScriptString(value) {
 }
 
 async function copyImageToClipboard(file) {
+  if (IS_WINDOWS) {
+    await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$files = New-Object System.Collections.Specialized.StringCollection
+[void]$files.Add(${powerShellSingleQuote(file.filePath)})
+[System.Windows.Forms.Clipboard]::SetFileDropList($files)
+`);
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Image clipboard automation is not supported on ${process.platform}.`);
   const quoted = appleScriptString(file.filePath);
   let typeExpr = '«class PNGf»';
   if (file.mime === 'image/jpeg') typeExpr = 'JPEG picture';
@@ -2493,6 +2681,11 @@ async function copyImageToClipboard(file) {
 }
 
 async function pressPaste() {
+  if (IS_WINDOWS) {
+    await windowsSendKeys('^v');
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Paste automation is not supported on ${process.platform}.`);
   const script = `
     tell application "System Events"
       keystroke "v" using command down
@@ -2514,10 +2707,21 @@ async function pressPasteAndEnter() {
 }
 
 async function pressEnter() {
+  if (IS_WINDOWS) {
+    await windowsSendKeys('{ENTER}');
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Keyboard automation is not supported on ${process.platform}.`);
   await runProcess('osascript', ['-e', 'tell application "System Events" to key code 36']);
 }
 
 async function pressCodexShortcut(key, modifiers = []) {
+  if (IS_WINDOWS) {
+    await windowsActivateCodexWindow();
+    await windowsSendKeys(windowsShortcutKeys(key, modifiers));
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Keyboard automation is not supported on ${process.platform}.`);
   const modifierExpr = modifiers.length ? ` using {${modifiers.map(item => `${item} down`).join(', ')}}` : '';
   const script = `
     tell application "System Events"
@@ -2528,6 +2732,14 @@ async function pressCodexShortcut(key, modifiers = []) {
 }
 
 async function pressCancelCodexResponse() {
+  if (IS_WINDOWS) {
+    await windowsActivateCodexWindow();
+    await windowsSendKeys('{ESC}');
+    await delay(80);
+    await windowsSendKeys('^.');
+    return;
+  }
+  if (!IS_MAC) throw new Error(`Keyboard automation is not supported on ${process.platform}.`);
   const script = `
     tell application "System Events"
       key code 53
