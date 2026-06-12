@@ -12,13 +12,22 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 
 ## 当前发布版本
 
-- 版本：macOS v4.2.2 / Windows v4.0.0
-- macOS 安装包：[下载 Codex Mini v4.2.2.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.2/Codex.Mini.v4.2.2.dmg)
-- Windows 安装包：[下载 Codex Mini Windows v4.0.0.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.2/CodexMiniWindowsSetup-v4.0.0.exe)
-- Release 页面：[codex-mini-v4.2.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.2)
+- 版本：macOS v4.2.3 / Windows v4.0.0
+- macOS 安装包：[下载 Codex Mini v4.2.3.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.3/Codex.Mini.v4.2.3.dmg)
+- Windows 安装包：[下载 Codex Mini Windows v4.0.0.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.3/CodexMiniWindowsSetup-v4.0.0.exe)
+- Release 页面：[codex-mini-v4.2.3](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.3)
 - 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 直接运行 EXE 安装
 
-### 最新版 V4.2.2
+### 最新版 V4.2.3
+
+- 电脑 Codex 上直接发送的消息，现在会同步显示到手机端聊天记录，并像正常收发消息一样自然逐条出现
+- 手机端线程列表与电脑 Codex 界面保持一致，SSH 远程线程也只显示电脑端当前可见的会话
+- 线程菜单分区顺序调整为「项目 → SSH 服务器 → 对话」
+- 线程列表更稳定：连接瞬时波动时不再清空列表或自动跳到其他线程
+- 降低手机端轮询对电脑的占用，多设备同时使用时电脑 Codex 更流畅
+- 修复切换模型时偶发误入「速度」菜单的问题，聊天记录不再显示内部接续说明文本
+
+### V4.2.2
 
 - **重大更新：新增官方 Windows 版安装包，Windows 版按 v4.0.0 独立版本线发布**
 - 优化启动稳定性
@@ -61,13 +70,13 @@ QQ 群：**760669553**
 
 ## Windows 版本
 
-官方 Windows 安装包已经随 v4.2.2 Release 一起发布，文件名是 `CodexMiniWindowsSetup-v4.0.0.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
+官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMiniWindowsSetup-v4.0.0.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
 
 社区项目 [atuizz/codex-max](https://github.com/atuizz/codex-max) 仍可作为另一个 Windows 方向参考。
 
 ## 安装与使用
 
-1. 按系统下载 `Codex.Mini.v4.2.2.dmg` 或 `CodexMiniWindowsSetup-v4.0.0.exe`
+1. 按系统下载 `Codex.Mini.v4.2.3.dmg` 或 `CodexMiniWindowsSetup-v4.0.0.exe`
 2. macOS 安装前完整删除旧 `Codex Mini Beta.app`，建议用第三方卸载工具清理旧 App、旧 LaunchAgent 和旧运行目录
 3. macOS 打开 DMG，把 `Codex Mini.app` 拖到 `Applications`；Windows 直接运行 EXE 安装
 4. 打开 Codex Mini

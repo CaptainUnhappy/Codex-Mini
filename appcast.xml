@@ -6,10 +6,10 @@
     <description>Codex Mini 官方更新源</description>
     <language>zh-CN</language>
     <item>
-      <title>Codex Mini v4.2.2</title>
-      <sparkle:releaseNotesLink>https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.2</sparkle:releaseNotesLink>
-      <pubDate>Thu, 11 Jun 2026 19:15:51 +0000</pubDate>
-      <enclosure url="https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.2/Codex.Mini.v4.2.2.dmg" length="42341746" type="application/octet-stream" sparkle:version="422" sparkle:shortVersionString="4.2.2" sparkle:edSignature="XQLUZxUo8jFsykhwxlhDl9skbUYN3POUDlHWgSTQwP98vFUtFJYGzeO2zoAao9h3LYMjXlsGOsfagNGHyx4yAg==" />
+      <title>Codex Mini v4.2.3</title>
+      <sparkle:releaseNotesLink>https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.3</sparkle:releaseNotesLink>
+      <pubDate>Fri, 12 Jun 2026 22:31:53 +0000</pubDate>
+      <enclosure url="https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.3/Codex.Mini.v4.2.3.dmg" length="42351093" type="application/octet-stream" sparkle:version="423" sparkle:shortVersionString="4.2.3" sparkle:edSignature="pQDAvSTlj5fgcek+yMahOop4emKUns8fyqOdJquR6mdeH2giB9zIk9CU2h+Oi9g0u8FVfpvv3u83cluB6qj7Bg==" />
     </item>
   </channel>
 </rss>
