@@ -898,6 +898,26 @@ async function waitForCodexSessionFileForNewSend(options = {}, timeoutMs = 2600)
   return findCodexSessionFileForNewSend(options);
 }
 
+async function waitForCodexUserMessageInFile(file, options = {}, timeoutMs = 2600) {
+  const sinceMs = Number(options.sinceMs) || 0;
+  const text = typeof options.text === 'string' ? options.text : '';
+  if (!file || !text.trim()) return null;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      if (userMessageMatchScore(file, sinceMs, text) > 0) return file;
+    } catch {
+      // File may rotate while Codex writes; retry until timeout.
+    }
+    await delay(220);
+  }
+  try {
+    return userMessageMatchScore(file, sinceMs, text) > 0 ? file : null;
+  } catch {
+    return null;
+  }
+}
+
 function readJsonlTailObjects(file, maxBytes) {
   let stat;
   try { stat = fs.statSync(file); } catch { return []; }
@@ -2290,6 +2310,9 @@ async function windowsSendKeys(keys) {
   await runWindowsPowerShell(`
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.AppActivate('Codex')
+Start-Sleep -Milliseconds 80
 [System.Windows.Forms.SendKeys]::SendWait(${powerShellSingleQuote(keys)})
 `);
 }
@@ -2756,12 +2779,14 @@ async function pasteAndEnter(text, target = 'frontmost', attachments = [], threa
 
   for (const attachment of attachments) {
     await copyImageToClipboard(attachment);
+    if (IS_WINDOWS && target === 'codex') await focusTarget(target, threadId, options);
     await pressPaste();
     await delay(ATTACHMENT_PASTE_SETTLE_MS);
   }
 
   if (text) {
     await copyTextToClipboard(text);
+    if (IS_WINDOWS && target === 'codex') await focusTarget(target, threadId, options);
     await pressPasteAndEnter();
     return;
   }
@@ -3100,6 +3125,7 @@ async function handleSend(req, res) {
       });
     }
     await pasteAndEnter(text, target, attachments, selectedThreadId, { assumeThreadSynced, skipComposerClick: directPasteWithoutClick });
+    let confirmedSendFile = null;
     if (expectNewThread && watch) {
       const newSessionFile = await waitForCodexSessionFileForNewSend({
         sinceMs: watchSinceMs,
@@ -3108,6 +3134,7 @@ async function handleSend(req, res) {
         excludeThreadId: previousThreadId,
       });
       if (newSessionFile) {
+        confirmedSendFile = newSessionFile;
         watch = {
           ...watch,
           threadId: threadIdFromSessionFile(newSessionFile),
@@ -3116,6 +3143,14 @@ async function handleSend(req, res) {
           excludeThreadId: '',
         };
       }
+    } else if (target === 'codex' && text.trim() && watchFile) {
+      confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
+    }
+    if (target === 'codex' && text.trim() && !confirmedSendFile) {
+      const error = new Error('Codex did not record the sent message. The text may have been pasted into the composer without being submitted.');
+      error.code = 'CODEX_SEND_NOT_CONFIRMED';
+      error.status = 502;
+      throw error;
     }
     const result = {
       ok: true,
@@ -3136,6 +3171,14 @@ async function handleSend(req, res) {
     return json(res, 200, result);
   } catch (error) {
     if (clientRequestId) recentSendRequests.delete(clientRequestId);
+    if (error && error.code === 'CODEX_SEND_NOT_CONFIRMED') {
+      return json(res, error.status || 502, {
+        ok: false,
+        code: error.code,
+        message: '已经把文字交给 Windows 自动化，但 Codex 没有记录这条消息。请确认 Codex 输入框里没有残留文字；如果有，手动按一次 Enter 后再试。',
+        detail: error.message,
+      });
+    }
     const explained = explainTargetError(error, target);
     return json(res, 500, { ok: false, ...explained });
   }
