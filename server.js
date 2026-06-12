@@ -50,7 +50,7 @@ const CODEX_THREAD_SYNC_FRESH_MS = 5000;
 const CODEX_DEEPLINK_SETTLE_MS = 560;
 const CODEX_APP_FOCUS_SETTLE_MS = 100;
 const CODEX_CLICK_SETTLE_MS = 60;
-const TEXT_PASTE_SETTLE_MS = 140;
+const TEXT_PASTE_SETTLE_MS = 260;
 const ATTACHMENT_PASTE_SETTLE_MS = 220;
 const CODEX_COMMAND_SETTLE_MS = 180;
 const CODEX_MODEL_COMMAND_SETTLE_MS = 450;
@@ -2238,7 +2238,37 @@ async function runWindowsPowerShell(script) {
   }
 }
 
+async function windowsAssertInteractiveDesktop() {
+  const { stdout } = await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class CodexMiniDesktopProbe {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+}
+"@
+$handle = [CodexMiniDesktopProbe]::GetForegroundWindow()
+$className = New-Object System.Text.StringBuilder 256
+$title = New-Object System.Text.StringBuilder 256
+[void][CodexMiniDesktopProbe]::GetClassName($handle, $className, 256)
+[void][CodexMiniDesktopProbe]::GetWindowText($handle, $title, 256)
+Write-Output ("class=" + $className.ToString() + ";title=" + $title.ToString())
+`);
+  const info = stdout.trim();
+  if (/LockScreenBackstopFrame|Windows\.UI\.Core\.CoreWindow/i.test(info) && /锁屏|lock/i.test(info)) {
+    const error = new Error(`Windows desktop is locked or showing a secure screen (${info}).`);
+    error.code = 'CODEX_DESKTOP_LOCKED';
+    error.status = 409;
+    throw error;
+  }
+}
+
 async function windowsActivateCodexWindow({ startIfNeeded = true } = {}) {
+  await windowsAssertInteractiveDesktop();
   const appId = powerShellSingleQuote(`shell:AppsFolder\\${WINDOWS_CODEX_APP_ID}`);
   await runWindowsPowerShell(`
 $ErrorActionPreference = 'Stop'
@@ -2267,19 +2297,148 @@ if (-not $activated) {
 async function windowsClickCodexComposer() {
   await runWindowsPowerShell(`
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class CodexMiniWin32 {
   [StructLayout(LayoutKind.Sequential)]
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT { public int X; public int Y; }
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 }
 "@
+function Click-CodexMiniPoint([int]$x, [int]$y) {
+  [void][CodexMiniWin32]::SetCursorPos($x, $y)
+  [CodexMiniWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [CodexMiniWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+function Assert-CodexMiniPointIsInteractive([int]$x, [int]$y) {
+  $pt = New-Object CodexMiniWin32+POINT
+  $pt.X = $x
+  $pt.Y = $y
+  $target = [CodexMiniWin32]::WindowFromPoint($pt)
+  $className = New-Object System.Text.StringBuilder 256
+  $title = New-Object System.Text.StringBuilder 256
+  [void][CodexMiniWin32]::GetClassName($target, $className, 256)
+  [void][CodexMiniWin32]::GetWindowText($target, $title, 256)
+  $info = "class=" + $className.ToString() + ";title=" + $title.ToString()
+  if ($info -match '(?i)LockScreenBackstopFrame|Windows\\.UI\\.Core\\.CoreWindow|锁屏|lock screen') {
+    throw ("CODEX_DESKTOP_LOCKED: Windows lock screen or secure desktop is covering Codex at input point (" + $info + ").")
+  }
+}
+function Dismiss-CodexMiniBottomObstructions([IntPtr]$handle) {
+  try {
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if (-not $window) { return }
+    $windowBounds = $window.Current.BoundingRectangle
+    $bottomCutoff = $windowBounds.Bottom - 240
+    $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $item = $all.Item($i)
+      if ($item.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+      if (-not $item.Current.IsEnabled -or $item.Current.IsOffscreen) { continue }
+      $name = [string]$item.Current.Name
+      if ($name -notmatch '(?i)关闭|close|dismiss') { continue }
+      $rect = $item.Current.BoundingRectangle
+      if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+      if ($rect.Y -lt $bottomCutoff) { continue }
+      try {
+        $pattern = $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $pattern.Invoke()
+      } catch {
+        Click-CodexMiniPoint ([int]($rect.X + ($rect.Width / 2))) ([int]($rect.Y + ($rect.Height / 2)))
+      }
+      Start-Sleep -Milliseconds 180
+      return
+    }
+  } catch {
+  }
+}
+function New-CodexMiniPoint([int]$x, [int]$y) {
+  return [pscustomobject]@{ X = $x; Y = $y }
+}
+function Get-CodexMiniComposerPoint([IntPtr]$handle) {
+  $fallbackRect = New-Object CodexMiniWin32+RECT
+  if (-not [CodexMiniWin32]::GetWindowRect($handle, [ref]$fallbackRect)) { throw 'Could not read Codex window bounds.' }
+  $fallbackWidth = [Math]::Max(1, $fallbackRect.Right - $fallbackRect.Left)
+  $fallbackHeight = [Math]::Max(1, $fallbackRect.Bottom - $fallbackRect.Top)
+  $fallbackX = [int]($fallbackRect.Left + ($fallbackWidth / 2))
+  $fallbackBottomOffset = [Math]::Max(72, [Math]::Min(150, [int]($fallbackHeight * 0.11)))
+  $fallbackY = [int]($fallbackRect.Bottom - $fallbackBottomOffset)
+  try {
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if (-not $window) { return New-CodexMiniPoint $fallbackX $fallbackY }
+    $bounds = $window.Current.BoundingRectangle
+    $sidebarCutoff = $bounds.Left + [Math]::Min(340, [Math]::Max(280, [int]($bounds.Width * 0.2)))
+    $topCutoff = $bounds.Top + 180
+    $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    $namedCandidates = @()
+    $groupCandidates = @()
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $item = $all.Item($i)
+      if ($item.Current.IsOffscreen) { continue }
+      $rect = $item.Current.BoundingRectangle
+      if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+      if ($rect.X -lt $sidebarCutoff -or $rect.Y -lt $topCutoff) { continue }
+      $name = [string]$item.Current.Name
+      $typeName = $item.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+      if ($name -match '(?i)(?:\\u968f\\u5fc3\\u8f93\\u5165|\\u8f93\\u5165|\\u6d88\\u606f|ask|message|prompt)') {
+        $namedCandidates += [pscustomobject]@{
+          X = [int]($rect.X + [Math]::Min(80, [Math]::Max(24, $rect.Width / 2)))
+          Y = [int]($rect.Y + ($rect.Height / 2))
+          Score = [double]$rect.Y
+          Element = $item
+          CanInvoke = (($item.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ',') -match 'InvokePattern'
+        }
+      } elseif ($typeName -eq 'Group' -and $rect.Width -ge 360 -and $rect.Height -ge 32 -and $rect.Height -le 140) {
+        $groupCandidates += [pscustomobject]@{
+          X = [int]($rect.X + [Math]::Min(90, [Math]::Max(32, $rect.Width * 0.16)))
+          Y = [int]($rect.Y + [Math]::Min(28, [Math]::Max(18, $rect.Height / 2)))
+          Score = [double]$rect.Y
+          Element = $item
+          CanInvoke = (($item.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ',') -match 'InvokePattern'
+        }
+      }
+    }
+    if ($groupCandidates.Count) {
+      $best = $groupCandidates | Sort-Object @{ Expression = 'CanInvoke'; Descending = $true }, @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1
+      if ($best.CanInvoke) {
+        try {
+          $pattern = $best.Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          $pattern.Invoke()
+          Start-Sleep -Milliseconds 160
+        } catch {
+        }
+      }
+      return New-CodexMiniPoint $best.X $best.Y
+    }
+    if ($namedCandidates.Count) {
+      $best = $namedCandidates | Sort-Object @{ Expression = 'CanInvoke'; Descending = $true }, @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1
+      if ($best.CanInvoke) {
+        try {
+          $pattern = $best.Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          $pattern.Invoke()
+          Start-Sleep -Milliseconds 160
+        } catch {
+        }
+      }
+      return New-CodexMiniPoint $best.X $best.Y
+    }
+  } catch {
+  }
+  return New-CodexMiniPoint $fallbackX $fallbackY
+}
 $shell = New-Object -ComObject WScript.Shell
 [void]$shell.AppActivate('Codex')
 Start-Sleep -Milliseconds 120
@@ -2291,17 +2450,11 @@ if (-not $proc) { throw 'Codex window handle not found after activation.' }
 [void][CodexMiniWin32]::ShowWindow($proc.MainWindowHandle, 9)
 [void][CodexMiniWin32]::SetForegroundWindow($proc.MainWindowHandle)
 Start-Sleep -Milliseconds 120
-$rect = New-Object CodexMiniWin32+RECT
-if (-not [CodexMiniWin32]::GetWindowRect($proc.MainWindowHandle, [ref]$rect)) { throw 'Could not read Codex window bounds.' }
-$width = [Math]::Max(1, $rect.Right - $rect.Left)
-$height = [Math]::Max(1, $rect.Bottom - $rect.Top)
-$x = [int]($rect.Left + ($width / 2))
-$bottomOffset = [Math]::Max(72, [Math]::Min(150, [int]($height * 0.11)))
-$y = [int]($rect.Bottom - $bottomOffset)
-[void][CodexMiniWin32]::SetCursorPos($x, $y)
-[CodexMiniWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 40
-[CodexMiniWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 220
+Dismiss-CodexMiniBottomObstructions $proc.MainWindowHandle
+$point = Get-CodexMiniComposerPoint $proc.MainWindowHandle
+Assert-CodexMiniPointIsInteractive ([int]$point.X) ([int]$point.Y)
+Click-CodexMiniPoint ([int]$point.X) ([int]$point.Y)
 `);
   await delay(CODEX_CLICK_SETTLE_MS);
 }
@@ -2314,6 +2467,411 @@ $shell = New-Object -ComObject WScript.Shell
 [void]$shell.AppActivate('Codex')
 Start-Sleep -Milliseconds 80
 [System.Windows.Forms.SendKeys]::SendWait(${powerShellSingleQuote(keys)})
+`);
+}
+
+async function windowsDismissCodexBottomObstructions() {
+  const result = await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexMiniDismissWin32 {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extra);
+}
+"@
+function Click-CodexMiniPoint([int]$x, [int]$y) {
+  [void][CodexMiniDismissWin32]::SetCursorPos($x, $y)
+  [CodexMiniDismissWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [CodexMiniDismissWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.AppActivate('Codex')
+Start-Sleep -Milliseconds 260
+$proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+  Where-Object { $_.MainWindowHandle -ne 0 } |
+  Sort-Object StartTime -Descending |
+  Select-Object -First 1
+if (-not $proc) { return }
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+if (-not $window) { return }
+$windowBounds = $window.Current.BoundingRectangle
+$bottomCutoff = $windowBounds.Bottom - 240
+$all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+for ($i = 0; $i -lt $all.Count; $i++) {
+  $item = $all.Item($i)
+  if ($item.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+  if (-not $item.Current.IsEnabled -or $item.Current.IsOffscreen) { continue }
+  $name = [string]$item.Current.Name
+  if ($name -notmatch '(?i)关闭|close|dismiss') { continue }
+  $rect = $item.Current.BoundingRectangle
+  if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+  if ($rect.Y -lt $bottomCutoff) { continue }
+  try {
+    $pattern = $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $pattern.Invoke()
+  } catch {
+    Click-CodexMiniPoint ([int]($rect.X + ($rect.Width / 2))) ([int]($rect.Y + ($rect.Height / 2)))
+  }
+  Start-Sleep -Milliseconds 220
+  Write-Output 'DISMISSED'
+  return
+}
+`);
+  return /\bDISMISSED\b/.test(result.stdout || '');
+}
+
+async function windowsPasteTextAndEnter(text, threadId = '', options = {}) {
+  const filePath = path.join(os.tmpdir(), `codex-mini-submit-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.txt`);
+  fs.writeFileSync(filePath, String(text || ''), 'utf8');
+  try {
+    await activateCodexThread(threadId, { allowCached: Boolean(options.assumeThreadSynced) });
+    await windowsDismissCodexBottomObstructions().catch(() => false);
+    await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexMiniSubmitWin32 {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct INPUT { public UInt32 type; public InputUnion U; }
+  [StructLayout(LayoutKind.Explicit)]
+  public struct InputUnion { [FieldOffset(0)] public KEYBDINPUT ki; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT {
+    public UInt16 wVk;
+    public UInt16 wScan;
+    public UInt32 dwFlags;
+    public UInt32 time;
+    public UIntPtr dwExtraInfo;
+  }
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, int dwFlags, UIntPtr extra);
+  [DllImport("user32.dll", SetLastError=true)] public static extern UInt32 SendInput(UInt32 nInputs, INPUT[] pInputs, int cbSize);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+}
+"@
+function Activate-CodexMiniWindow {
+  $shell = New-Object -ComObject WScript.Shell
+  [void]$shell.AppActivate('Codex')
+  Start-Sleep -Milliseconds 90
+  $proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 } |
+    Sort-Object StartTime -Descending |
+    Select-Object -First 1
+  if (-not $proc) { throw 'Codex window handle not found.' }
+  [void][CodexMiniSubmitWin32]::ShowWindow($proc.MainWindowHandle, 9)
+  [void][CodexMiniSubmitWin32]::SetForegroundWindow($proc.MainWindowHandle)
+  [void]$shell.AppActivate('Codex')
+  Start-Sleep -Milliseconds 120
+  return $proc.MainWindowHandle
+}
+function Click-CodexMiniComposer([IntPtr]$handle) {
+  $rect = New-Object CodexMiniSubmitWin32+RECT
+  if (-not [CodexMiniSubmitWin32]::GetWindowRect($handle, [ref]$rect)) { throw 'Could not read Codex window bounds.' }
+  $width = [Math]::Max(1, $rect.Right - $rect.Left)
+  $height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+  $x = [int]($rect.Left + ($width / 2))
+  $bottomOffset = [Math]::Max(72, [Math]::Min(150, [int]($height * 0.11)))
+  $y = [int]($rect.Bottom - $bottomOffset)
+  [void][CodexMiniSubmitWin32]::SetCursorPos($x, $y)
+  [CodexMiniSubmitWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [CodexMiniSubmitWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 140
+}
+function Send-KeyDown([byte]$vk) {
+  [CodexMiniSubmitWin32]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
+}
+function Send-KeyUp([byte]$vk) {
+  [CodexMiniSubmitWin32]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)
+}
+function Send-KeyTap([byte]$vk) {
+  Send-KeyDown $vk
+  Start-Sleep -Milliseconds 45
+  Send-KeyUp $vk
+}
+function Send-CtrlV {
+  Send-KeyDown 0x11
+  Start-Sleep -Milliseconds 35
+  Send-KeyTap 0x56
+  Start-Sleep -Milliseconds 35
+  Send-KeyUp 0x11
+}
+function Send-ShiftEnter {
+  Send-KeyDown 0x10
+  Start-Sleep -Milliseconds 20
+  Send-KeyTap 0x0D
+  Start-Sleep -Milliseconds 20
+  Send-KeyUp 0x10
+}
+function Send-UnicodeChar([char]$ch) {
+  $inputs = New-Object 'CodexMiniSubmitWin32+INPUT[]' 2
+  $inputs[0].type = 1
+  $inputs[0].U.ki.wVk = 0
+  $inputs[0].U.ki.wScan = [UInt16][char]$ch
+  $inputs[0].U.ki.dwFlags = 0x0004
+  $inputs[0].U.ki.time = 0
+  $inputs[0].U.ki.dwExtraInfo = [UIntPtr]::Zero
+  $inputs[1].type = 1
+  $inputs[1].U.ki.wVk = 0
+  $inputs[1].U.ki.wScan = [UInt16][char]$ch
+  $inputs[1].U.ki.dwFlags = 0x0004 -bor 0x0002
+  $inputs[1].U.ki.time = 0
+  $inputs[1].U.ki.dwExtraInfo = [UIntPtr]::Zero
+  [void][CodexMiniSubmitWin32]::SendInput(2, $inputs, [Runtime.InteropServices.Marshal]::SizeOf([type][CodexMiniSubmitWin32+INPUT]))
+}
+function Send-UnicodeText([string]$value) {
+  foreach ($ch in $value.ToCharArray()) {
+    if ($ch -eq [char]13) { continue }
+    if ($ch -eq [char]10) {
+      Send-ShiftEnter
+      Start-Sleep -Milliseconds 6
+      continue
+    }
+    Send-UnicodeChar $ch
+    Start-Sleep -Milliseconds 2
+  }
+}
+function Click-CodexMiniPoint([int]$x, [int]$y) {
+  [void][CodexMiniSubmitWin32]::SetCursorPos($x, $y)
+  [CodexMiniSubmitWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [CodexMiniSubmitWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+function Assert-CodexMiniPointIsInteractive([int]$x, [int]$y) {
+  $pt = New-Object CodexMiniSubmitWin32+POINT
+  $pt.X = $x
+  $pt.Y = $y
+  $target = [CodexMiniSubmitWin32]::WindowFromPoint($pt)
+  $className = New-Object System.Text.StringBuilder 256
+  $title = New-Object System.Text.StringBuilder 256
+  [void][CodexMiniSubmitWin32]::GetClassName($target, $className, 256)
+  [void][CodexMiniSubmitWin32]::GetWindowText($target, $title, 256)
+  $info = "class=" + $className.ToString() + ";title=" + $title.ToString()
+  if ($info -match '(?i)LockScreenBackstopFrame|Windows\\.UI\\.Core\\.CoreWindow|锁屏|lock screen') {
+    throw ("CODEX_DESKTOP_LOCKED: Windows lock screen or secure desktop is covering Codex at input point (" + $info + ").")
+  }
+}
+function Dismiss-CodexMiniBottomObstructions([IntPtr]$handle) {
+  try {
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if (-not $window) { return }
+    $windowBounds = $window.Current.BoundingRectangle
+    $bottomCutoff = $windowBounds.Bottom - 240
+    $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $item = $all.Item($i)
+      if ($item.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+      if (-not $item.Current.IsEnabled -or $item.Current.IsOffscreen) { continue }
+      $name = [string]$item.Current.Name
+      if ($name -notmatch '(?i)关闭|close|dismiss') { continue }
+      $rect = $item.Current.BoundingRectangle
+      if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+      if ($rect.Y -lt $bottomCutoff) { continue }
+      try {
+        $pattern = $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $pattern.Invoke()
+      } catch {
+        Click-CodexMiniPoint ([int]($rect.X + ($rect.Width / 2))) ([int]($rect.Y + ($rect.Height / 2)))
+      }
+      Start-Sleep -Milliseconds 180
+      return
+    }
+  } catch {
+  }
+}
+function New-CodexMiniPoint([int]$x, [int]$y) {
+  return [pscustomobject]@{ X = $x; Y = $y }
+}
+function Get-CodexMiniComposerPoint([IntPtr]$handle) {
+  $fallbackRect = New-Object CodexMiniSubmitWin32+RECT
+  if (-not [CodexMiniSubmitWin32]::GetWindowRect($handle, [ref]$fallbackRect)) { throw 'Could not read Codex window bounds.' }
+  $fallbackWidth = [Math]::Max(1, $fallbackRect.Right - $fallbackRect.Left)
+  $fallbackHeight = [Math]::Max(1, $fallbackRect.Bottom - $fallbackRect.Top)
+  $fallbackX = [int]($fallbackRect.Left + ($fallbackWidth / 2))
+  $fallbackBottomOffset = [Math]::Max(72, [Math]::Min(150, [int]($fallbackHeight * 0.11)))
+  $fallbackY = [int]($fallbackRect.Bottom - $fallbackBottomOffset)
+  try {
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if (-not $window) { return New-CodexMiniPoint $fallbackX $fallbackY }
+    $bounds = $window.Current.BoundingRectangle
+    $sidebarCutoff = $bounds.Left + [Math]::Min(340, [Math]::Max(280, [int]($bounds.Width * 0.2)))
+    $topCutoff = $bounds.Top + 180
+    $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    $namedCandidates = @()
+    $groupCandidates = @()
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $item = $all.Item($i)
+      if ($item.Current.IsOffscreen) { continue }
+      $rect = $item.Current.BoundingRectangle
+      if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+      if ($rect.X -lt $sidebarCutoff -or $rect.Y -lt $topCutoff) { continue }
+      $name = [string]$item.Current.Name
+      $typeName = $item.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+      if ($name -match '(?i)(?:\\u968f\\u5fc3\\u8f93\\u5165|\\u8f93\\u5165|\\u6d88\\u606f|ask|message|prompt)') {
+        $namedCandidates += [pscustomobject]@{
+          X = [int]($rect.X + [Math]::Min(80, [Math]::Max(24, $rect.Width / 2)))
+          Y = [int]($rect.Y + ($rect.Height / 2))
+          Score = [double]$rect.Y
+          Element = $item
+          CanInvoke = (($item.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ',') -match 'InvokePattern'
+        }
+      } elseif ($typeName -eq 'Group' -and $rect.Width -ge 360 -and $rect.Height -ge 32 -and $rect.Height -le 140) {
+        $groupCandidates += [pscustomobject]@{
+          X = [int]($rect.X + [Math]::Min(90, [Math]::Max(32, $rect.Width * 0.16)))
+          Y = [int]($rect.Y + [Math]::Min(28, [Math]::Max(18, $rect.Height / 2)))
+          Score = [double]$rect.Y
+          Element = $item
+          CanInvoke = (($item.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ',') -match 'InvokePattern'
+        }
+      }
+    }
+    if ($groupCandidates.Count) {
+      $best = $groupCandidates | Sort-Object @{ Expression = 'CanInvoke'; Descending = $true }, @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1
+      if ($best.CanInvoke) {
+        try {
+          $pattern = $best.Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          $pattern.Invoke()
+          Start-Sleep -Milliseconds 160
+        } catch {
+        }
+      }
+      return New-CodexMiniPoint $best.X $best.Y
+    }
+    if ($namedCandidates.Count) {
+      $best = $namedCandidates | Sort-Object @{ Expression = 'CanInvoke'; Descending = $true }, @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1
+      if ($best.CanInvoke) {
+        try {
+          $pattern = $best.Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          $pattern.Invoke()
+          Start-Sleep -Milliseconds 160
+        } catch {
+        }
+      }
+      return New-CodexMiniPoint $best.X $best.Y
+    }
+  } catch {
+  }
+  return New-CodexMiniPoint $fallbackX $fallbackY
+}
+$handle = Activate-CodexMiniWindow
+Start-Sleep -Milliseconds 220
+Dismiss-CodexMiniBottomObstructions $handle
+$point = Get-CodexMiniComposerPoint $handle
+Assert-CodexMiniPointIsInteractive ([int]$point.X) ([int]$point.Y)
+Click-CodexMiniPoint ([int]$point.X) ([int]$point.Y)
+Start-Sleep -Milliseconds 260
+$text = [System.IO.File]::ReadAllText(${powerShellSingleQuote(filePath)}, [System.Text.Encoding]::UTF8)
+$clipboardSet = $false
+$lastClipboardError = $null
+for ($i = 0; $i -lt 10; $i++) {
+  try {
+    [System.Windows.Forms.Clipboard]::SetText($text, [System.Windows.Forms.TextDataFormat]::UnicodeText)
+    $clipboardSet = $true
+    break
+  } catch {
+    $lastClipboardError = $_
+    Start-Sleep -Milliseconds (80 + ($i * 45))
+  }
+}
+if (-not $clipboardSet) {
+  try {
+    Set-Clipboard -Value $text
+    $clipboardSet = $true
+  } catch {
+    $clipboardSet = $false
+  }
+}
+Start-Sleep -Milliseconds 120
+$handle = Activate-CodexMiniWindow
+Start-Sleep -Milliseconds 220
+Dismiss-CodexMiniBottomObstructions $handle
+$point = Get-CodexMiniComposerPoint $handle
+Assert-CodexMiniPointIsInteractive ([int]$point.X) ([int]$point.Y)
+Click-CodexMiniPoint ([int]$point.X) ([int]$point.Y)
+Start-Sleep -Milliseconds 260
+if ($clipboardSet) {
+  Send-CtrlV
+} else {
+  Send-UnicodeText $text
+}
+Start-Sleep -Milliseconds ${TEXT_PASTE_SETTLE_MS}
+Send-KeyTap 0x0D
+Start-Sleep -Milliseconds 160
+`);
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+}
+
+async function windowsClickCodexSendButton() {
+  await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexMiniSendButtonWin32 {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extra);
+}
+"@
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.AppActivate('Codex')
+Start-Sleep -Milliseconds 160
+$proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+  Where-Object { $_.MainWindowHandle -ne 0 } |
+  Sort-Object StartTime -Descending |
+  Select-Object -First 1
+if (-not $proc) { throw 'Codex window handle not found.' }
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+if (-not $window) { throw 'Codex UI Automation window not found.' }
+$windowBounds = $window.Current.BoundingRectangle
+$bottomCutoff = $windowBounds.Bottom - 180
+$all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$button = $null
+for ($i = 0; $i -lt $all.Count; $i++) {
+  $item = $all.Item($i)
+  if ($item.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+  if (-not $item.Current.IsEnabled -or $item.Current.IsOffscreen) { continue }
+  $name = [string]$item.Current.Name
+  if ($name -notmatch '(?i)发送|send') { continue }
+  $rect = $item.Current.BoundingRectangle
+  if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+  if ($rect.Y -lt $bottomCutoff) { continue }
+  if (-not $button -or $rect.X -gt $button.Current.BoundingRectangle.X) { $button = $item }
+}
+if (-not $button) { throw 'Codex send button not found.' }
+try {
+  $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+  $pattern.Invoke()
+} catch {
+  $rect = $button.Current.BoundingRectangle
+  [void][CodexMiniSendButtonWin32]::SetCursorPos([int]($rect.X + ($rect.Width / 2)), [int]($rect.Y + ($rect.Height / 2)))
+  [CodexMiniSendButtonWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [CodexMiniSendButtonWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+Start-Sleep -Milliseconds 180
 `);
 }
 
@@ -2355,6 +2913,13 @@ function explainAutomationError(error) {
 function explainTargetError(error, target) {
   const raw = String(error && (error.stderr || error.message) || '');
   if (target === 'codex') {
+    if ((error && error.code === 'CODEX_DESKTOP_LOCKED') || /CODEX_DESKTOP_LOCKED|LockScreenBackstopFrame|Windows\.UI\.Core\.CoreWindow|锁屏|lock screen/i.test(raw)) {
+      return {
+        code: 'CODEX_DESKTOP_LOCKED',
+        message: 'Windows 当前处于锁屏或安全桌面，Codex Mini 不能把文字输入到 Codex。请解锁电脑，并保持运行 start-codex-mini-relay.bat 的桌面会话处于已登录未锁屏状态后再发送。',
+        detail: raw,
+      };
+    }
     if (IS_WINDOWS) {
       return {
         code: 'CODEX_FOCUS_FAILED',
@@ -2775,6 +3340,11 @@ async function pressCancelCodexResponse() {
 
 
 async function pasteAndEnter(text, target = 'frontmost', attachments = [], threadId = '', options = {}) {
+  if (IS_WINDOWS && target === 'codex' && text && !attachments.length) {
+    await windowsPasteTextAndEnter(text, threadId, options);
+    return;
+  }
+
   await focusTarget(target, threadId, options);
 
   for (const attachment of attachments) {
@@ -2785,6 +3355,10 @@ async function pasteAndEnter(text, target = 'frontmost', attachments = [], threa
   }
 
   if (text) {
+    if (IS_WINDOWS && target === 'codex') {
+      await windowsPasteTextAndEnter(text, threadId, { ...options, assumeThreadSynced: true });
+      return;
+    }
     await copyTextToClipboard(text);
     if (IS_WINDOWS && target === 'codex') await focusTarget(target, threadId, options);
     await pressPasteAndEnter();
@@ -3146,6 +3720,60 @@ async function handleSend(req, res) {
     } else if (target === 'codex' && text.trim() && watchFile) {
       confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
     }
+    if (target === 'codex' && text.trim() && !confirmedSendFile && IS_WINDOWS) {
+      const dismissedObstruction = await windowsDismissCodexBottomObstructions().catch(() => false);
+      if (dismissedObstruction) {
+        await windowsPasteTextAndEnter(text, selectedThreadId, { assumeThreadSynced: true });
+        if (expectNewThread && watch) {
+          const newSessionFile = await waitForCodexSessionFileForNewSend({
+            sinceMs: watchSinceMs,
+            text,
+            cwd: expectedNewThreadCwd,
+            excludeThreadId: previousThreadId,
+          });
+          if (newSessionFile) {
+            confirmedSendFile = newSessionFile;
+            watch = {
+              ...watch,
+              threadId: threadIdFromSessionFile(newSessionFile),
+              sessionFile: path.basename(newSessionFile),
+              expectNewThread: false,
+              excludeThreadId: '',
+            };
+          }
+        } else if (watchFile) {
+          confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
+        }
+      }
+    }
+    if (target === 'codex' && text.trim() && !confirmedSendFile && IS_WINDOWS) {
+      try {
+        await windowsClickCodexSendButton();
+      } catch {
+        // If UI Automation cannot see an enabled send button, keep the clearer
+        // confirmation failure below instead of masking it with a click error.
+      }
+      if (expectNewThread && watch) {
+        const newSessionFile = await waitForCodexSessionFileForNewSend({
+          sinceMs: watchSinceMs,
+          text,
+          cwd: expectedNewThreadCwd,
+          excludeThreadId: previousThreadId,
+        });
+        if (newSessionFile) {
+          confirmedSendFile = newSessionFile;
+          watch = {
+            ...watch,
+            threadId: threadIdFromSessionFile(newSessionFile),
+            sessionFile: path.basename(newSessionFile),
+            expectNewThread: false,
+            excludeThreadId: '',
+          };
+        }
+      } else if (watchFile) {
+        confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
+      }
+    }
     if (target === 'codex' && text.trim() && !confirmedSendFile) {
       const error = new Error('Codex did not record the sent message. The text may have been pasted into the composer without being submitted.');
       error.code = 'CODEX_SEND_NOT_CONFIRMED';
@@ -3180,7 +3808,8 @@ async function handleSend(req, res) {
       });
     }
     const explained = explainTargetError(error, target);
-    return json(res, 500, { ok: false, ...explained });
+    const status = explained.code === 'CODEX_DESKTOP_LOCKED' ? 409 : error.status || 500;
+    return json(res, status, { ok: false, ...explained });
   }
 }
 
