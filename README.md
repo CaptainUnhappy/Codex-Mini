@@ -15,6 +15,7 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 - 版本：macOS v4.2.3 / Windows v4.0.0
 - macOS 安装包：[下载 Codex Mini v4.2.3.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.3/Codex.Mini.v4.2.3.dmg)
 - Windows 安装包：[下载 Codex Mini Windows v4.0.0.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.3/CodexMiniWindowsSetup-v4.0.0.exe)
+- 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
 - Release 页面：[codex-mini-v4.2.3](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.3)
 - 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 直接运行 EXE 安装
 
