@@ -2183,7 +2183,12 @@ function startRelayClient() {
       }, delay);
     });
     ws.on('error', error => {
-      console.warn(`Relay connection error: ${error.message}`);
+      const message = String(error && error.message || '');
+      if (/Unexpected server response:\s*401/i.test(message)) {
+        console.warn(`Relay rejected this device (401). If this is a new computer, approve "${RELAY_DEVICE_ID}" in ${RELAY_PUBLIC_BASE || 'the relay admin page'}/admin/ and keep this window open; it will reconnect automatically.`);
+        return;
+      }
+      console.warn(`Relay connection error: ${message}`);
     });
   };
 
@@ -3944,10 +3949,10 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, HOST, () => {
   const urls = getLanUrls();
   console.log('\nCodex mini is running.');
-  console.log('Keep this terminal open, put your Mac cursor where you want text, then open one of these URLs on your phone:');
+  console.log('Keep this terminal open while using Codex Mini.');
   for (const url of urls) console.log(`  ${url}`);
   if (RELAY_PUBLIC_BASE) printRelayQr();
-  console.log('\nTip: phone and Mac must be on the same Wi‑Fi. Press Ctrl+C to stop.\n');
+  console.log('\nTip: for relay use, approve new devices in the relay admin page first. Press Ctrl+C to stop.\n');
   startRelayClient();
 });
 
