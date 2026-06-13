@@ -16,6 +16,7 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || process.env.CODEX_MINI_RELAY_ADMI
 const ADMIN_PASSWORD = process.env.CODEX_MINI_RELAY_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
 const ADMIN_PASSWORD_HASH = process.env.CODEX_MINI_RELAY_ADMIN_PASSWORD_HASH || process.env.ADMIN_PASSWORD_HASH || '';
 const ADMIN_SESSION_SECRET = process.env.CODEX_MINI_RELAY_ADMIN_SESSION_SECRET || process.env.ADMIN_SESSION_SECRET || ADMIN_TOKEN || ADMIN_PASSWORD_HASH || ADMIN_PASSWORD || crypto.randomBytes(32).toString('base64url');
+const REGISTRATION_KEY = process.env.CODEX_MINI_RELAY_REGISTRATION_KEY || process.env.RELAY_REGISTRATION_KEY || '';
 const MAX_BODY_BYTES = Number(process.env.CODEX_MINI_RELAY_MAX_BODY_BYTES || 32 * 1024 * 1024);
 const REQUEST_TIMEOUT_MS = Number(process.env.CODEX_MINI_RELAY_TIMEOUT_MS || 70 * 1000);
 const MAX_DEVICE_CONCURRENCY = Number(process.env.CODEX_MINI_RELAY_MAX_CONCURRENCY || 8);
@@ -104,7 +105,18 @@ function normalizeDevice(device) {
     relaySecret,
     passphraseHash,
     sessionVersion: Number(device.sessionVersion || 1) || 1,
+    approved: device.approved !== false,
+    createdAt: String(device.createdAt || ''),
+    approvedAt: String(device.approvedAt || ''),
   };
+}
+
+function sanitizeDeviceId(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96);
 }
 
 function loadDevices() {
@@ -132,6 +144,9 @@ function saveDevices(devices) {
     relaySecret: device.relaySecret,
     passphraseHash: device.passphraseHash,
     sessionVersion: Number(device.sessionVersion || 1) || 1,
+    approved: device.approved !== false,
+    createdAt: device.createdAt || '',
+    approvedAt: device.approvedAt || '',
   })) };
   const tmp = `${DEVICES_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`);
@@ -148,6 +163,36 @@ function updateDevice(deviceId, updater) {
   updater(target);
   saveDevices(devices);
   return registry.byId.get(deviceId) || target;
+}
+
+function upsertDevice(device) {
+  reloadDevicesIfChanged();
+  const devices = registry.devices.map(item => ({ ...item }));
+  const existingIndex = devices.findIndex(item => item.deviceId === device.deviceId);
+  const existing = existingIndex >= 0 ? devices[existingIndex] : null;
+  const now = new Date().toISOString();
+  const next = {
+    deviceId: device.deviceId,
+    name: device.name || device.deviceId,
+    relaySecret: device.relaySecret,
+    passphraseHash: hashPassphrase(device.passphrase),
+    sessionVersion: Number(existing && existing.sessionVersion || 0) + 1,
+    approved: device.approved === true,
+    createdAt: existing && existing.createdAt || now,
+    approvedAt: device.approved === true ? (existing && existing.approvedAt || now) : '',
+  };
+  if (existingIndex >= 0) devices[existingIndex] = next;
+  else devices.push(next);
+  saveDevices(devices);
+  return registry.byId.get(device.deviceId) || next;
+}
+
+function approveDevice(deviceId) {
+  return updateDevice(deviceId, device => {
+    device.approved = true;
+    device.approvedAt = new Date().toISOString();
+    device.sessionVersion = Number(device.sessionVersion || 1) + 1;
+  });
 }
 
 function reloadDevicesIfChanged() {
@@ -167,6 +212,7 @@ function reloadDevicesIfChanged() {
 function findDeviceByPassphrase(passphrase) {
   reloadDevicesIfChanged();
   for (const device of registry.devices) {
+    if (device.approved === false) continue;
     if (verifyPassphrase(passphrase, device.passphraseHash)) return device;
   }
   return null;
@@ -573,6 +619,67 @@ async function handleAdminDevicePassphrase(req, res) {
   return redirect(res, '../');
 }
 
+async function handleDeviceRegister(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed' });
+  if (!REGISTRATION_KEY) {
+    return json(res, 503, { ok: false, code: 'REGISTRATION_KEY_NOT_CONFIGURED', message: 'Device registration key is not configured.' });
+  }
+  let payload = {};
+  try {
+    payload = await readAdminPayload(req);
+  } catch {
+    return json(res, 400, { ok: false, code: 'BAD_REQUEST', message: 'Request body is invalid.' });
+  }
+  const submittedKey = String(payload.registrationKey || req.headers['x-relay-registration-key'] || req.headers['x-registration-key'] || '');
+  if (!timingSafeEqualString(submittedKey, REGISTRATION_KEY)) {
+    logMeta('device_register_denied', { ip: clientIp(req) });
+    return json(res, 401, { ok: false, code: 'BAD_REGISTRATION_KEY', message: 'Device registration key is incorrect.' });
+  }
+
+  const deviceId = sanitizeDeviceId(payload.deviceId);
+  const name = String(payload.name || deviceId).trim().slice(0, 120) || deviceId;
+  const relaySecret = String(payload.relaySecret || '').trim();
+  const passphrase = String(payload.passphrase || '').trim();
+
+  if (!deviceId) return json(res, 400, { ok: false, code: 'BAD_DEVICE_ID', message: 'Device id is required.' });
+  if (relaySecret.length < 24) return json(res, 400, { ok: false, code: 'WEAK_RELAY_SECRET', message: 'Relay secret is too short.' });
+  if (passphrase.length < LOGIN_MIN_PASSPHRASE_LENGTH) {
+    return json(res, 400, { ok: false, code: 'WEAK_PASSPHRASE', message: 'Device passphrase must be at least 8 characters.' });
+  }
+
+  reloadDevicesIfChanged();
+  const existing = registry.byId.get(deviceId);
+  if (existing && existing.approved !== false) {
+    return json(res, 409, { ok: false, code: 'DEVICE_ALREADY_APPROVED', message: 'Device id is already approved.' });
+  }
+
+  const device = upsertDevice({ deviceId, name, relaySecret, passphrase, approved: false });
+  logMeta('device_pending_registered', { deviceId: device.deviceId, ip: clientIp(req) });
+  return json(res, 200, {
+    ok: true,
+    deviceId: device.deviceId,
+    name: device.name,
+    approved: false,
+    sessionVersion: device.sessionVersion,
+  });
+}
+
+async function handleAdminDeviceApprove(req, res) {
+  if (!isAdmin(req)) return html(res, 401, adminLoginPage('Please login first.'));
+  if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed' });
+  let payload = {};
+  try {
+    payload = await readAdminPayload(req);
+  } catch {
+    return json(res, 400, { ok: false, code: 'BAD_REQUEST', message: 'Request body is invalid.' });
+  }
+  const deviceId = sanitizeDeviceId(payload.deviceId);
+  const updated = approveDevice(deviceId);
+  if (!updated) return json(res, 404, { ok: false, code: 'DEVICE_NOT_FOUND', message: 'Device not found.' });
+  logMeta('admin_device_approved', { deviceId });
+  return redirect(res, '../');
+}
+
 async function handleAdminDeviceRevoke(req, res) {
   if (!isAdmin(req)) return html(res, 401, adminLoginPage('请先登录管理端。'));
   if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed' });
@@ -596,12 +703,19 @@ function handleAdminStatus(req, res) {
   reloadDevicesIfChanged();
   const rows = registry.devices.map(device => {
     const tunnel = tunnels.get(device.deviceId);
+    const approved = device.approved !== false;
     const online = Boolean(tunnel && tunnel.ws.readyState === 1);
+    const status = approved ? (online ? 'online' : 'offline') : 'pending';
     const connectedFor = tunnel ? Math.round((Date.now() - tunnel.connectedAt) / 1000) : 0;
+    const approveForm = approved ? '' : `
+        <form method="post" action="device/approve">
+          <input type="hidden" name="deviceId" value="${htmlEscape(device.deviceId)}">
+          <button type="submit">Approve device</button>
+        </form>`;
     return `<tr>
       <td>${htmlEscape(device.name)}</td>
       <td>${htmlEscape(device.deviceId)}</td>
-      <td>${online ? 'online' : 'offline'}</td>
+      <td>${status}</td>
       <td>${htmlEscape(tunnel && tunnel.remoteAddress || '')}</td>
       <td>${connectedFor}</td>
       <td>${htmlEscape(tunnel && tunnel.lastRequestAt ? new Date(tunnel.lastRequestAt).toISOString() : '')}</td>
@@ -609,6 +723,7 @@ function handleAdminStatus(req, res) {
       <td>${htmlEscape(tunnel && tunnel.lastError || '')}</td>
       <td>${Number(device.sessionVersion || 1)}</td>
       <td>
+        ${approveForm}
         <form method="post" action="device/passphrase">
           <input type="hidden" name="deviceId" value="${htmlEscape(device.deviceId)}">
           <input name="passphrase" type="password" minlength="8" placeholder="新密钥" required>
@@ -790,6 +905,7 @@ function authenticateTunnel(req) {
   const signature = String(url.searchParams.get('signature') || '');
   const device = registry.byId.get(deviceId);
   if (!device || !timestamp || !nonce || !signature) return null;
+  if (device.approved === false) return null;
   if (Math.abs(Date.now() - timestamp) > TUNNEL_TIMESTAMP_SKEW_MS) return null;
   const expected = hmac(device.relaySecret, `${deviceId}.${timestamp}.${nonce}`);
   if (!timingSafeEqualString(expected, signature)) return null;
@@ -807,6 +923,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (url.pathname === '/health') return json(res, 200, { ok: true, service: 'codex-mini-relay', now: new Date().toISOString() });
+  if (url.pathname === '/device/register') return handleDeviceRegister(req, res);
   if (url.pathname === '/login') return handleLogin(req, res);
   if (url.pathname === '/logout') return handleLogout(req, res);
   if (url.pathname === '/admin' || url.pathname === '/admin/') return handleAdminHome(req, res);
@@ -814,6 +931,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/admin/logout') return handleAdminLogout(req, res);
   if (url.pathname === '/admin/status') return handleAdminStatus(req, res);
   if (url.pathname === '/admin/device/passphrase') return handleAdminDevicePassphrase(req, res);
+  if (url.pathname === '/admin/device/approve') return handleAdminDeviceApprove(req, res);
   if (url.pathname === '/admin/device/revoke') return handleAdminDeviceRevoke(req, res);
 
   const device = getSessionDevice(req);
