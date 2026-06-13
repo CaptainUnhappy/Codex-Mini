@@ -43,11 +43,6 @@
       --keyboard-shift-trim: 15px;
       --keyboard-gap-bg: #0d0d0d;
       --composer-bottom-pad: max(56px, calc(env(safe-area-inset-bottom) + 30px));
-      --composer-signature-gap: 15px;
-      --composer-signature-top: calc(var(--thread-composer-gap) + 64px + var(--composer-signature-gap));
-      --signature-dot-tint-a: color(display-p3 .67 .90 .82);
-      --signature-dot-tint-b: color(display-p3 .57 .92 .74);
-      --signature-dot-glow: rgba(142,240,183,.14);
       --dot-core: color(display-p3 .42 1 .68);
       --dot-glow-soft: color(display-p3 .18 1 .48 / .52);
       --dot-glow-peak: color(display-p3 .56 1 .78);
@@ -160,6 +155,10 @@
       color: var(--ok);
       border-color: rgba(142,240,183,.28);
       background: rgba(142,240,183,.11);
+    }
+    .route-badge.is-hidden-slot {
+      visibility: hidden;
+      pointer-events: none;
     }
     .reasoning-badge,
     .model-badge {
@@ -629,12 +628,59 @@
     }
     .thread-rename-actions .save { color: #5eb4ff; background: rgba(94,180,255,.12); }
     .thread-section + .thread-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.07); }
+    .thread-section-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 24px;
+      margin-bottom: 4px;
+    }
     .thread-section-label {
       padding: 5px 10px 7px;
       color: var(--faint);
       font-size: 11px;
       font-weight: 720;
       letter-spacing: .04em;
+    }
+    .thread-section-heading .thread-section-label {
+      min-width: 0;
+      flex: 1 1 auto;
+      padding-bottom: 0;
+    }
+    .thread-section-action {
+      flex: 0 0 auto;
+      height: 24px;
+      min-width: 24px;
+      border: 1px solid rgba(158,203,255,.24);
+      border-radius: 999px;
+      background: rgba(158,203,255,.085);
+      color: #9ecbff;
+      display: inline-grid;
+      grid-template-columns: 12px auto;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 760;
+      line-height: 1;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .thread-section-action:active {
+      transform: scale(.96);
+      background: rgba(158,203,255,.14);
+    }
+    .thread-section-action svg {
+      width: 12px;
+      height: 12px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      vector-effect: non-scaling-stroke;
     }
     .project-group + .project-group { margin-top: 4px; }
     .project-header {
@@ -1307,81 +1353,6 @@
       background: #202020;
       box-shadow: none;
     }
-    body.dot-blue {
-      --signature-dot-tint-a: color(display-p3 .58 .77 1);
-      --signature-dot-tint-b: color(display-p3 .48 .70 1);
-      --signature-dot-glow: rgba(94,180,255,.15);
-    }
-    body.dot-orange {
-      --signature-dot-tint-a: color(display-p3 1 .74 .48);
-      --signature-dot-tint-b: color(display-p3 1 .62 .34);
-      --signature-dot-glow: rgba(255,174,69,.13);
-    }
-    .composer-signature {
-      position: absolute;
-      left: 50%;
-      top: var(--composer-signature-top);
-      bottom: auto;
-      z-index: 1;
-      max-width: calc(100vw - 48px);
-      transform: translateX(-50%) scaleX(1.14);
-      transform-origin: center;
-      pointer-events: none;
-      -webkit-user-select: none;
-      user-select: none;
-      white-space: nowrap;
-      font-family: "Snell Roundhand", "Bradley Hand", "Apple Chancery", "Segoe Script", cursive;
-      font-size: clamp(16px, 3.8vw, 21px);
-      font-weight: 650;
-      line-height: 1.35;
-      padding-bottom: .18em;
-      letter-spacing: .06em;
-      color: transparent;
-      -webkit-text-fill-color: transparent;
-      background: linear-gradient(92deg, rgba(255,255,255,.46) 0%, rgba(158,203,255,.95) 28%, var(--signature-dot-tint-a) 46%, rgba(142,240,183,.84) 64%, var(--signature-dot-tint-b) 78%, rgba(255,255,255,.48) 100%);
-      background-size: 260% 100%;
-      background-position: 50% 50%;
-      -webkit-background-clip: text;
-      background-clip: text;
-      text-shadow: 0 0 18px rgba(158,203,255,.22), 0 0 26px rgba(142,240,183,.16), 0 0 22px var(--signature-dot-glow);
-      opacity: 1;
-      filter: brightness(1.28) saturate(1.06);
-      dynamic-range-limit: no-limit;
-      animation: none;
-      transition: opacity .18s ease, transform .18s ease;
-    }
-    body.dot-blue .composer-signature {
-      --signature-dot-tint-a: color(display-p3 .58 .77 1);
-      --signature-dot-tint-b: color(display-p3 .48 .70 1);
-      --signature-dot-glow: rgba(94,180,255,.15);
-    }
-    body.dot-orange .composer-signature {
-      --signature-dot-tint-a: color(display-p3 1 .74 .48);
-      --signature-dot-tint-b: color(display-p3 1 .62 .34);
-      --signature-dot-glow: rgba(255,174,69,.13);
-    }
-    body.dot-flashing .composer-signature {
-      animation: signatureColorFlow 4.8s ease-in-out infinite;
-    }
-
-    @media (dynamic-range: high) {
-      .composer-signature {
-        filter: brightness(1.38) saturate(1.08);
-        text-shadow: 0 0 22px rgba(158,203,255,.28), 0 0 34px rgba(142,240,183,.2), 0 0 28px var(--signature-dot-glow);
-      }
-    }
-    @keyframes signatureColorFlow {
-      0% { background-position: 0% 50%; }
-      50% { background-position: 100% 50%; }
-      100% { background-position: 0% 50%; }
-    }
-    body.keyboard-open .composer-signature {
-      opacity: 0;
-      transform: translateX(-50%) translateY(8px) scaleX(1.14);
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .composer-signature { animation: none; }
-    }
     .icon-btn, .send-btn {
       appearance: none;
       border: 0;
@@ -1567,7 +1538,6 @@
         padding-right: max(var(--thread-menu-edge-gap), calc((100vw - 520px) / 2));
       }
       .composer { border-radius: 29px; }
-      .composer-signature { font-size: 18.5px; }
     }
 
     body.standalone .thread { padding-top: 16px; }
@@ -1642,7 +1612,6 @@
         <button class="send-btn stop-btn composer-action-hidden" id="stop" type="button" title="取消当前 Codex 回复" aria-label="取消当前 Codex 回复" hidden><span class="stop-square" aria-hidden="true"></span></button>
         <button class="send-btn" id="send" type="submit" title="发送给 Codex Mini" aria-label="发送给 Codex Mini">↑</button>
       </form>
-      <div class="composer-signature" aria-hidden="true">Codex Mini By Coming Rain.</div>
     </footer>
   </div>
 
@@ -1651,7 +1620,6 @@
     const composerShell = document.querySelector('.composer-shell');
     const topbar = document.querySelector('.topbar');
     const composer = document.getElementById('composer');
-    const composerSignature = document.querySelector('.composer-signature');
     const textarea = document.getElementById('text');
     const sendButton = document.getElementById('send');
     const stopButton = document.getElementById('stop');
@@ -1804,7 +1772,7 @@
     let lastApiConfigRefreshAt = 0;
     const API_CONFIG_REFRESH_MIN_MS = 15000;
     const hasSavedProjectGroupState = localStorage.getItem(GROUPS_STORAGE_KEY) !== null;
-    routeBadgeCompact = localStorage.getItem(ROUTE_BADGE_COMPACT_STORAGE_KEY) === '1';
+    routeBadgeCompact = false;
     const isStandalone = Boolean(window.navigator.standalone) || window.matchMedia('(display-mode: standalone)').matches;
     document.body.classList.toggle('standalone', isStandalone);
 
@@ -2488,15 +2456,14 @@
     threadActionPinToggleIcon.innerHTML = PIN_ICON;
     function updateRouteBadge() {
       const text = routeTextForKind(activeApiKind);
-      routeBadge.className = `route-badge is-${activeApiKind === 'relay' ? 'relay' : 'local'}${routeBadgeCompact ? ' is-compact' : ''}`;
+      routeBadge.className = `route-badge is-${activeApiKind === 'relay' ? 'relay' : 'local'} is-hidden-slot`;
       routeIcon.innerHTML = routeIconMarkup(activeApiKind);
       routeText.textContent = text;
-      routeBadge.title = `当前线路：${text}${activeApiKind === 'relay' ? ' · 自建中继' : ' · Mac 局域网'}；点击切换显示模式`;
+      routeBadge.title = '';
       routeBadge.setAttribute('aria-label', routeBadge.title);
     }
     function toggleRouteBadgeCompact() {
-      routeBadgeCompact = !routeBadgeCompact;
-      try { localStorage.setItem(ROUTE_BADGE_COMPACT_STORAGE_KEY, routeBadgeCompact ? '1' : '0'); } catch {}
+      routeBadgeCompact = false;
       updateRouteBadge();
     }
     function routeLabel(candidate) {
@@ -2986,7 +2953,6 @@
       keepLayoutViewportPinned();
       requestAnimationFrame(() => {
         thread.scrollTop = thread.scrollHeight;
-        positionComposerSignature();
       });
     }
 
@@ -3443,7 +3409,6 @@
         chip.append(img, remove);
         attachmentTray.appendChild(chip);
       });
-      positionComposerSignature();
     }
 
     function queuedSendSummary(text, attachments = []) {
@@ -3459,14 +3424,12 @@
       if (!count) {
         queuedSend.classList.remove('is-sending');
         queuedSendText.textContent = '';
-        positionComposerSignature();
         return;
       }
       const hasSending = queuedSends.some(item => item.state === 'sending');
       queuedSend.classList.toggle('is-sending', hasSending);
       queuedSendLabel.textContent = hasSending ? '发送中' : count > 1 ? `待发送 ${count}` : '待发送';
       queuedSendText.textContent = queuedSends.map(item => item.summary).join(' ｜ ');
-      positionComposerSignature();
     }
 
     function addQueuedSend(text, attachments = [], state = 'sending', options = {}) {
@@ -3881,7 +3844,25 @@
         section.className = 'thread-section';
         label.className = 'thread-section-label';
         label.textContent = currentProjectKey ? '当前项目 / 最近项目' : '项目';
-        section.appendChild(label);
+        if (currentProjectKey) {
+          const heading = document.createElement('div');
+          const conversationButton = document.createElement('button');
+          heading.className = 'thread-section-heading';
+          conversationButton.className = 'thread-section-action';
+          conversationButton.type = 'button';
+          conversationButton.title = '创建无项目的新对话';
+          conversationButton.setAttribute('aria-label', '创建无项目的新对话');
+          conversationButton.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg><span>无项目</span>';
+          conversationButton.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            createNewThreadInCurrentProject({ forceConversation: true });
+          });
+          heading.append(label, conversationButton);
+          section.appendChild(heading);
+        } else {
+          section.appendChild(label);
+        }
         projectGroups.forEach(group => appendProjectGroup(section, group, group.key === currentProjectKey));
         threadMenu.appendChild(section);
       }
@@ -4164,11 +4145,12 @@
       }
     }
 
-    async function createNewThreadInCurrentProject() {
+    async function createNewThreadInCurrentProject(options = {}) {
       if (newThreadButton.disabled) return;
+      const forceConversation = Boolean(options.forceConversation);
       const current = knownThreads.find(item => item.id === selectedThreadId);
       const previousThreadId = selectedThreadId || '';
-      const isProjectScope = Boolean(current?.isProjectThread && (current.projectPath || current.cwd));
+      const isProjectScope = !forceConversation && Boolean(current?.isProjectThread && (current.projectPath || current.cwd));
       const newThreadScope = isProjectScope ? 'project' : 'conversation';
       newThreadButton.disabled = true;
       threadMenu.classList.remove('is-open');
@@ -4845,27 +4827,9 @@
       threadStateTimer = setInterval(refreshThreadRuntimeStates, 4500);
     }
 
-
-    function composerSignatureGap() {
-      if (!composerShell) return 34;
-      const styles = window.getComputedStyle(composerShell);
-      const gap = parseFloat(styles.getPropertyValue('--composer-signature-gap'));
-      return Number.isFinite(gap) ? gap : 34;
-    }
-
-    function positionComposerSignature() {
-      if (!composerShell || !composer || !composerSignature || document.body.classList.contains('keyboard-open')) return;
-      if (window.getComputedStyle(composerSignature).position !== 'absolute') return;
-      const shellRect = composerShell.getBoundingClientRect();
-      const composerRect = composer.getBoundingClientRect();
-      const top = Math.max(0, composerRect.bottom - shellRect.top + composerSignatureGap());
-      composerShell.style.setProperty('--composer-signature-top', `${Math.round(top)}px`);
-    }
-
     function autosize() {
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
-      positionComposerSignature();
     }
 
     function updateComposerAction() {
@@ -5056,10 +5020,8 @@
     window.addEventListener('scroll', keepLayoutViewportPinned, { passive: true });
     window.addEventListener('resize', alignComposerForKeyboard);
     window.addEventListener('resize', positionThreadMenuCard);
-    window.addEventListener('resize', positionComposerSignature);
     window.addEventListener('orientationchange', () => window.setTimeout(scheduleKeyboardAlignment, 250));
     window.addEventListener('orientationchange', () => window.setTimeout(positionThreadMenuCard, 250));
-    window.addEventListener('orientationchange', () => window.setTimeout(positionComposerSignature, 250));
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', alignComposerForKeyboard);
       window.visualViewport.addEventListener('scroll', alignComposerForKeyboard);
@@ -5450,7 +5412,6 @@
     lockViewportZoom();
     lockComposerDrag();
     lockPageScrollToThread();
-    positionComposerSignature();
     updateRouteBadge();
     renderReasoningBadge(bestReasoningMode(null, selectedThreadId));
     renderModelBadge(bestModelInfo(null, selectedThreadId));
