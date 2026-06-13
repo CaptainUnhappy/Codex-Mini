@@ -113,8 +113,7 @@ function Register-Device($Config) {
   Invoke-RestMethod -Method Post -Uri $registerUrl -ContentType 'application/json' -Body $body -TimeoutSec 30 | Out-Null
   $Config.registeredAt = (Get-Date).ToUniversalTime().ToString('o')
   $Config.approvedAtFirstStart = $false
-  Write-Host 'Device request submitted. Open the relay admin page and click "Approve device" before using the phone client.'
-  Write-Host "Admin page: $PublicBase/admin/"
+  Write-Host 'Device request submitted. Waiting for relay authorization.'
 }
 
 function Load-Or-CreateDeviceConfig {
@@ -218,7 +217,13 @@ function Ensure-NodeRuntime {
 }
 
 function Ensure-NodeDependencies {
-  if (Test-Path -LiteralPath (Join-Path $ProjectDir 'node_modules\ws')) { return }
+  $missing = @()
+  foreach ($module in @('node_modules\ws', 'node_modules\qrcode')) {
+    if (!(Test-Path -LiteralPath (Join-Path $ProjectDir $module))) {
+      $missing += $module
+    }
+  }
+  if ($missing.Count -eq 0) { return }
   Write-Host ''
   Write-Host 'Installing Node dependencies...'
   & $script:NpmCmd install
@@ -234,6 +239,8 @@ $env:CODEX_MINI_RELAY_PUBLIC_BASE = [string]$device.publicBase
 $env:CODEX_MINI_RELAY_DEVICE_ID = [string]$device.deviceId
 $env:CODEX_MINI_RELAY_SECRET = [string]$device.relaySecret
 $env:CODEX_MINI_RELAY_PASSPHRASE = [string]$device.passphrase
+$env:CODEX_MINI_TERMINAL_QR = '0'
+$env:CODEX_MINI_QR_DIR = [string]$ProjectDir
 
 Ensure-NodeRuntime
 Ensure-NodeDependencies

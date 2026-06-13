@@ -23,6 +23,7 @@ const RELAY_SECRET = process.env.CODEX_MINI_RELAY_SECRET || '';
 const RELAY_PASSPHRASE = process.env.CODEX_MINI_RELAY_PASSPHRASE || '';
 const RELAY_REQUEST_TIMEOUT_MS = Number(process.env.CODEX_MINI_RELAY_REQUEST_TIMEOUT_MS || 70 * 1000);
 const RELAY_RESPONSE_MAX_BYTES = Number(process.env.CODEX_MINI_RELAY_RESPONSE_MAX_BYTES || 32 * 1024 * 1024);
+const RELAY_TERMINAL_QR = process.env.CODEX_MINI_TERMINAL_QR !== '0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = Number(process.env.CODEX_MINI_MAX_BODY_BYTES || 28 * 1024 * 1024);
 const MAX_TEXT_LENGTH = 8000;
@@ -31,6 +32,7 @@ const MAX_ATTACHMENT_BYTES = Number(process.env.CODEX_MINI_MAX_ATTACHMENT_BYTES 
 const UPLOAD_DIR = path.join(os.tmpdir(), 'codex-mini-uploads');
 const STATE_DIR = process.env.CODEX_MINI_STATE_DIR || path.join(os.homedir(), '.codex-mini');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
+const QR_OUTPUT_DIR = process.env.CODEX_MINI_QR_DIR || (IS_WINDOWS ? __dirname : STATE_DIR);
 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const CODEX_SESSION_INDEX = path.join(os.homedir(), '.codex', 'session_index.jsonl');
@@ -2062,11 +2064,30 @@ function printRelayQr() {
   console.log('Relay phone URL:');
   console.log(`  ${url}`);
   if (!RELAY_PASSPHRASE) return;
+  if (RELAY_TERMINAL_QR) {
+    try {
+      const qrcode = require('qrcode-terminal');
+      qrcode.generate(url, { small: true });
+    } catch {
+      console.log('Install qrcode-terminal to print a terminal QR code.');
+    }
+  }
   try {
-    const qrcode = require('qrcode-terminal');
-    qrcode.generate(url, { small: true });
-  } catch {
-    console.log('Install qrcode-terminal to print a terminal QR code.');
+    fs.mkdirSync(QR_OUTPUT_DIR, { recursive: true });
+    const urlPath = path.join(QR_OUTPUT_DIR, '登录链接.txt');
+    const pngPath = path.join(QR_OUTPUT_DIR, '登录二维码.png');
+    fs.writeFileSync(urlPath, `${url}\n`, 'utf8');
+    const QRCode = require('qrcode');
+    QRCode.toFile(pngPath, url, { errorCorrectionLevel: 'M', margin: 2, width: 512 }, error => {
+      if (error) {
+        console.log(`Could not write relay QR image: ${error.message}`);
+        return;
+      }
+      console.log(`QR image saved: ${pngPath}`);
+      console.log(`Login URL file: ${urlPath}`);
+    });
+  } catch (error) {
+    console.log(`Could not write relay QR files: ${error.message}`);
   }
 }
 

@@ -6,10 +6,10 @@
     "check": "node --check server.js && node --check relay-server/server.js && node --check relay-server/create-device.js && node --check relay-server/lib/crypto.js"
   },
   "dependencies": {
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "ws": "^8.18.0"
   },
-  "devDependencies": {},
   "engines": {
     "node": ">=18"
   },
