@@ -239,7 +239,6 @@ $env:CODEX_MINI_RELAY_PUBLIC_BASE = [string]$device.publicBase
 $env:CODEX_MINI_RELAY_DEVICE_ID = [string]$device.deviceId
 $env:CODEX_MINI_RELAY_SECRET = [string]$device.relaySecret
 $env:CODEX_MINI_RELAY_PASSPHRASE = [string]$device.passphrase
-$env:CODEX_MINI_TERMINAL_QR = '0'
 $env:CODEX_MINI_QR_DIR = [string]$ProjectDir
 
 Ensure-NodeRuntime
