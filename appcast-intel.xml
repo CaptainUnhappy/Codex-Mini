@@ -8,8 +8,8 @@
     <item>
       <title>Codex Mini v4.2.4</title>
       <sparkle:releaseNotesLink>https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.4</sparkle:releaseNotesLink>
-      <pubDate>Sat, 13 Jun 2026 14:02:25 +0000</pubDate>
-      <enclosure url="https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.4/Codex.Mini.v4.2.4.dmg" length="42354149" type="application/octet-stream" sparkle:version="424" sparkle:shortVersionString="4.2.4" sparkle:edSignature="idRXQ47+Ok0M6Du3ocMsIjitjIDGk9RLhghjzwoGsgLEIi66ov3+Dz40BLVjrQx+A0Gm/EH6tavwsDfTR7JwCA==" />
+      <pubDate>Sat, 13 Jun 2026 14:03:34 +0000</pubDate>
+      <enclosure url="https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.4/Codex.Mini.Intel.v4.2.4.dmg" length="43568740" type="application/octet-stream" sparkle:version="424" sparkle:shortVersionString="4.2.4" sparkle:edSignature="QrTATZLoobIQYWPIPHSV4jb7J294atUHuWLdclDATbgCay2eW+4JA06p+Y1KDKNW2IdoCh31//9Xi7tWfemRAQ==" />
     </item>
   </channel>
 </rss>
