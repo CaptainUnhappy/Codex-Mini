@@ -106,6 +106,7 @@ function normalizeDevice(device) {
     passphraseHash,
     sessionVersion: Number(device.sessionVersion || 1) || 1,
     approved: device.approved !== false,
+    fingerprint: String(device.fingerprint || ''),
     createdAt: String(device.createdAt || ''),
     approvedAt: String(device.approvedAt || ''),
   };
@@ -145,6 +146,7 @@ function saveDevices(devices) {
     passphraseHash: device.passphraseHash,
     sessionVersion: Number(device.sessionVersion || 1) || 1,
     approved: device.approved !== false,
+    fingerprint: device.fingerprint || '',
     createdAt: device.createdAt || '',
     approvedAt: device.approvedAt || '',
   })) };
@@ -178,6 +180,7 @@ function upsertDevice(device) {
     passphraseHash: hashPassphrase(device.passphrase),
     sessionVersion: Number(existing && existing.sessionVersion || 0) + 1,
     approved: device.approved === true,
+    fingerprint: device.fingerprint || existing && existing.fingerprint || '',
     createdAt: existing && existing.createdAt || now,
     approvedAt: device.approved === true ? (existing && existing.approvedAt || now) : '',
   };
@@ -330,6 +333,47 @@ function html(res, status, body, headers = {}) {
   res.end(data);
 }
 
+function stripPublicBasePath(pathname) {
+  for (const prefix of ['/codex', '/codex-mini', '/mini']) {
+    if (pathname === prefix) return '/';
+    if (pathname.startsWith(`${prefix}/`)) return pathname.slice(prefix.length) || '/';
+  }
+  return pathname;
+}
+
+function serveRelayAsset(req, res, pathname) {
+  const assetPath = stripPublicBasePath(pathname);
+  if (assetPath === '/manifest.webmanifest') {
+    const body = Buffer.from(JSON.stringify({
+      name: 'Codex Mini Relay',
+      short_name: 'Codex Mini',
+      display: 'standalone',
+      scope: './',
+      start_url: './',
+      background_color: '#0d0f14',
+      theme_color: '#0d0f14',
+    }), 'utf8');
+    res.writeHead(200, {
+      'content-type': 'application/manifest+json; charset=utf-8',
+      'cache-control': 'public, max-age=3600',
+      'content-length': body.length,
+    });
+    res.end(req.method === 'HEAD' ? undefined : body);
+    return true;
+  }
+  if (
+    assetPath === '/favicon.ico' ||
+    assetPath === '/favicon.png' ||
+    assetPath === '/apple-touch-icon.png' ||
+    assetPath.startsWith('/icons/')
+  ) {
+    res.writeHead(204, { 'cache-control': 'public, max-age=3600' });
+    res.end();
+    return true;
+  }
+  return false;
+}
+
 function readBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -355,31 +399,43 @@ function loginPage(message = '') {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Codex Mini Relay</title>
+  <meta name="theme-color" content="#0d0f14" />
   <style>
-    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; color: #17181c; }
-    main { width: min(360px, calc(100vw - 32px)); }
-    h1 { font-size: 22px; margin: 0 0 20px; font-weight: 650; }
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0d0f14; color: #f6f7f9; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 22px; background: #0d0f14; }
+    main { width: min(390px, 100%); }
+    .panel { border: 1px solid #2a3140; border-radius: 8px; background: rgba(16, 19, 27, .94); padding: 22px; box-shadow: 0 18px 60px rgba(0,0,0,.34); }
+    .eyebrow { margin: 0 0 8px; color: #8da2c0; font-size: 12px; font-weight: 700; letter-spacing: 0; text-transform: uppercase; }
+    h1 { font-size: 24px; line-height: 1.15; margin: 0 0 6px; font-weight: 700; }
+    .copy { margin: 0 0 18px; color: #aeb8c8; font-size: 14px; line-height: 1.55; }
     form { display: grid; gap: 12px; }
-    input, button { height: 46px; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
-    input { border: 1px solid #c9ced8; padding: 0 12px; background: #fff; color: inherit; }
-    button { border: 0; background: #16181d; color: #fff; font-weight: 650; }
-    p { min-height: 20px; margin: 12px 0 0; color: #b42318; font-size: 14px; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #111318; color: #f5f6f8; }
-      input { background: #1c2028; border-color: #343b49; }
-      button { background: #f5f6f8; color: #111318; }
-    }
+    label { display: grid; gap: 7px; color: #cad2df; font-size: 13px; font-weight: 650; }
+    input, button { width: 100%; height: 46px; border-radius: 8px; font-size: 16px; }
+    input { border: 1px solid #3b4659; padding: 0 12px; background: #0b0d12; color: #f6f7f9; outline: none; }
+    input:focus { border-color: #7aa7ff; box-shadow: 0 0 0 3px rgba(122,167,255,.18); }
+    button { border: 0; background: #f6f7f9; color: #0d0f14; font-weight: 750; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .64; }
+    .message { min-height: 20px; margin: 12px 0 0; color: #ffb4a8; font-size: 14px; line-height: 1.45; }
+    .message.is-pending { color: #ffd98a; }
+    .hint { margin: 14px 0 0; color: #7f8ca2; font-size: 12px; line-height: 1.45; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Codex Mini</h1>
-    <form id="login-form" autocomplete="off">
-      <input id="passphrase" type="password" minlength="8" placeholder="设备密钥" autofocus />
-      <button id="submit" type="submit">登录</button>
-    </form>
-    <p id="message">${htmlEscape(message)}</p>
+    <section class="panel">
+      <p class="eyebrow">Self-hosted relay</p>
+      <h1>Codex Mini</h1>
+      <p class="copy">输入这台电脑的设备密钥后，手机端会连接到对应的在线桌面端。</p>
+      <form id="login-form" autocomplete="off">
+        <label>设备密钥
+          <input id="passphrase" type="password" minlength="8" placeholder="粘贴或扫码填入的设备密钥" autofocus />
+        </label>
+        <button id="submit" type="submit">登录</button>
+      </form>
+      <p id="message" class="message">${htmlEscape(message)}</p>
+      <p class="hint">二维码里的 #k 只会填入输入框；登录成功后才会从地址栏清理。</p>
+    </section>
   </main>
   <script>
     const form = document.getElementById('login-form');
@@ -391,7 +447,9 @@ function loginPage(message = '') {
     }
     async function login(passphrase) {
       message.textContent = '';
+      message.className = 'message';
       submit.disabled = true;
+      submit.textContent = '正在登录...';
       try {
         const response = await fetch('login', {
           method: 'POST',
@@ -399,12 +457,18 @@ function loginPage(message = '') {
           body: JSON.stringify({ passphrase }),
         });
         const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data.ok) throw new Error(data.message || '登录失败');
+        if (!response.ok || !data.ok) {
+          const error = new Error(data.message || '登录失败');
+          error.code = data.code || '';
+          throw error;
+        }
         cleanHash();
         location.replace('./');
       } catch (error) {
         message.textContent = error.message || '登录失败';
+        if (error.code === 'DEVICE_PENDING_AUTHORIZATION') message.className = 'message is-pending';
         submit.disabled = false;
+        submit.textContent = '登录';
       }
     }
     form.addEventListener('submit', event => {
@@ -533,25 +597,25 @@ function adminLoginPage(message = '') {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Codex Mini Admin</title>
+  <meta name="theme-color" content="#0d0f14" />
   <style>
-    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; color: #17181c; }
-    main { width: min(360px, calc(100vw - 32px)); }
-    h1 { font-size: 22px; margin: 0 0 20px; font-weight: 650; }
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0d0f14; color: #f6f7f9; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 22px; background: #0d0f14; }
+    main { width: min(390px, 100%); border: 1px solid #2a3140; border-radius: 8px; background: #10131b; padding: 22px; }
+    .eyebrow { margin: 0 0 8px; color: #8da2c0; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    h1 { font-size: 24px; margin: 0 0 18px; font-weight: 750; }
     form { display: grid; gap: 12px; }
-    input, button { height: 46px; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
-    input { border: 1px solid #c9ced8; padding: 0 12px; background: #fff; color: inherit; }
-    button { border: 0; background: #16181d; color: #fff; font-weight: 650; }
-    p { min-height: 20px; margin: 12px 0 0; color: #b42318; font-size: 14px; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #111318; color: #f5f6f8; }
-      input { background: #1c2028; border-color: #343b49; }
-      button { background: #f5f6f8; color: #111318; }
-    }
+    input, button { width: 100%; height: 46px; border-radius: 8px; font-size: 16px; }
+    input { border: 1px solid #3b4659; padding: 0 12px; background: #0b0d12; color: #f6f7f9; outline: none; }
+    input:focus { border-color: #7aa7ff; box-shadow: 0 0 0 3px rgba(122,167,255,.18); }
+    button { border: 0; background: #f6f7f9; color: #0d0f14; font-weight: 750; cursor: pointer; }
+    p { min-height: 20px; margin: 12px 0 0; color: #ffb4a8; font-size: 14px; }
   </style>
 </head>
 <body>
   <main>
+    <p class="eyebrow">Relay admin</p>
     <h1>Codex Mini 管理端</h1>
     <form method="post" action="login" autocomplete="off">
       <input name="password" type="password" placeholder="管理员密码" autofocus required />
@@ -645,6 +709,7 @@ async function handleDeviceRegister(req, res) {
   const name = String(payload.name || deviceId).trim().slice(0, 120) || deviceId;
   const relaySecret = String(payload.relaySecret || '').trim();
   const passphrase = String(payload.passphrase || '').trim();
+  const fingerprint = String(payload.fingerprint || '').replace(/[^a-zA-Z0-9._-]+/g, '').slice(0, 80);
 
   if (!deviceId) return json(res, 400, { ok: false, code: 'BAD_DEVICE_ID', message: 'Device id is required.' });
   if (relaySecret.length < 24) return json(res, 400, { ok: false, code: 'WEAK_RELAY_SECRET', message: 'Relay secret is too short.' });
@@ -658,7 +723,7 @@ async function handleDeviceRegister(req, res) {
     return json(res, 409, { ok: false, code: 'DEVICE_ALREADY_APPROVED', message: 'Device id is already approved.' });
   }
 
-  const device = upsertDevice({ deviceId, name, relaySecret, passphrase, approved: false });
+  const device = upsertDevice({ deviceId, name, relaySecret, passphrase, fingerprint, approved: false });
   logMeta('device_pending_registered', { deviceId: device.deviceId, ip: clientIp(req) });
   return json(res, 200, {
     ok: true,
@@ -706,25 +771,56 @@ async function handleAdminDeviceRevoke(req, res) {
 function handleAdminStatus(req, res) {
   if (!isAdmin(req)) return html(res, 401, adminLoginPage('请先登录管理端。'));
   reloadDevicesIfChanged();
-  const rows = registry.devices.map(device => {
+  const devices = registry.devices;
+  const pendingCount = devices.filter(device => device.approved === false).length;
+  const onlineCount = devices.filter(device => isDeviceOnline(device.deviceId)).length;
+  const formatTime = value => {
+    if (!value) return '';
+    const numeric = Number(value);
+    let time = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(value);
+    if (Number.isFinite(time) && time > 0 && time < 1000000000000) time *= 1000;
+    if (!Number.isFinite(time)) return String(value);
+    return new Date(time).toLocaleString('zh-CN', { hour12: false });
+  };
+  const formatDuration = seconds => {
+    const value = Number(seconds || 0);
+    if (!value) return '';
+    const h = Math.floor(value / 3600);
+    const m = Math.floor((value % 3600) / 60);
+    const s = value % 60;
+    if (h) return `${h}h ${m}m`;
+    if (m) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+  const rows = devices.map(device => {
     const tunnel = tunnels.get(device.deviceId);
     const approved = device.approved !== false;
     const online = Boolean(tunnel && tunnel.ws.readyState === 1);
     const status = approved ? (online ? 'online' : 'offline') : 'pending';
+    const statusText = status === 'pending' ? '等待授权' : status === 'online' ? '在线' : '离线';
     const connectedFor = tunnel ? Math.round((Date.now() - tunnel.connectedAt) / 1000) : 0;
+    const rateState = deviceRateState.get(device.deviceId) || {};
+    const activeRequests = Number(rateState.active || 0);
+    const minuteRequests = Number(rateState.count || 0);
     const approveForm = approved ? '' : `
         <form method="post" action="device/approve">
           <input type="hidden" name="deviceId" value="${htmlEscape(device.deviceId)}">
-          <button type="submit">Approve device</button>
+          <button class="primary" type="submit">授权设备</button>
         </form>`;
-    return `<tr>
-      <td>${htmlEscape(device.name)}</td>
-      <td>${htmlEscape(device.deviceId)}</td>
-      <td>${status}</td>
+    return `<tr class="is-${status}">
+      <td><span class="badge ${status}">${statusText}</span></td>
+      <td>
+        <strong>${htmlEscape(device.name)}</strong>
+        <small>创建：${htmlEscape(formatTime(device.createdAt) || '-')}</small>
+      </td>
+      <td class="mono">${htmlEscape(device.deviceId)}</td>
+      <td class="mono">${htmlEscape(device.fingerprint || '-')}</td>
       <td>${htmlEscape(tunnel && tunnel.remoteAddress || '')}</td>
-      <td>${connectedFor}</td>
-      <td>${htmlEscape(tunnel && tunnel.lastRequestAt ? new Date(tunnel.lastRequestAt).toISOString() : '')}</td>
+      <td>${htmlEscape(formatDuration(connectedFor))}</td>
+      <td>${htmlEscape(tunnel && tunnel.lastRequestAt ? formatTime(tunnel.lastRequestAt) : '')}</td>
       <td>${Number(tunnel && tunnel.requestCount || 0)}</td>
+      <td>${activeRequests}/${MAX_DEVICE_CONCURRENCY}</td>
+      <td>${minuteRequests}/${MAX_DEVICE_REQUESTS_PER_MINUTE}</td>
       <td>${htmlEscape(tunnel && tunnel.lastError || '')}</td>
       <td>${Number(device.sessionVersion || 1)}</td>
       <td>
@@ -736,15 +832,17 @@ function handleAdminStatus(req, res) {
         </form>
         <form method="post" action="device/revoke">
           <input type="hidden" name="deviceId" value="${htmlEscape(device.deviceId)}">
-          <button type="submit">踢掉旧登录</button>
+          <button class="danger" type="submit">踢掉旧登录</button>
         </form>
       </td>
     </tr>`;
-  }).join('\n');
+  }).join('\n') || '<tr><td class="empty" colspan="13">暂无设备。启动桌面端后，这里会出现待授权设备。</td></tr>';
   html(res, 200, `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Mini Relay Status</title>
-<style>body{font-family:system-ui,sans-serif;margin:24px;}header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px;}table{border-collapse:collapse;width:100%;}td,th{border-bottom:1px solid #ddd;padding:8px;text-align:left;vertical-align:top;}th{font-size:13px;color:#555;}form{display:flex;gap:6px;margin:0 0 6px;}input{height:30px;padding:0 8px;}button{height:32px;white-space:nowrap;}</style>
-</head><body><header><h1>Codex Mini Relay</h1><form method="post" action="logout"><button type="submit">退出管理端</button></form></header><table><thead><tr><th>Name</th><th>Device</th><th>Status</th><th>IP</th><th>Seconds</th><th>Last request</th><th>Requests</th><th>Last error</th><th>Session</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`);
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Mini Relay Admin</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d0f14;color:#f6f7f9}*{box-sizing:border-box}body{margin:0;background:#0d0f14;color:#f6f7f9}.page{width:min(1180px,calc(100vw - 32px));margin:0 auto;padding:24px 0 32px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.eyebrow{margin:0 0 7px;color:#8da2c0;font-size:12px;font-weight:700;text-transform:uppercase}h1{margin:0;font-size:24px}.muted{color:#95a1b5;font-size:13px}.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0}.metric{border:1px solid #283142;border-radius:8px;background:#10131b;padding:14px}.metric strong{display:block;font-size:24px}.metric span{color:#95a1b5;font-size:13px}.table-wrap{overflow:auto;border:1px solid #283142;border-radius:8px;background:#10131b}table{border-collapse:collapse;width:100%;min-width:980px}td,th{border-bottom:1px solid #242b39;padding:10px;text-align:left;vertical-align:top}th{font-size:12px;color:#95a1b5;font-weight:700;background:#151a24;white-space:nowrap}tr:last-child td{border-bottom:0}tr.is-pending{background:rgba(255,217,138,.06)}strong{display:block;margin-bottom:4px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:12px;color:#d6deeb;word-break:break-all}small{display:block;color:#8793a8;font-size:12px}.badge{display:inline-flex;align-items:center;height:24px;border-radius:999px;padding:0 9px;font-size:12px;font-weight:750}.badge.online{background:#123c2b;color:#8ff0b6}.badge.offline{background:#343947;color:#c7d0df}.badge.pending{background:#473818;color:#ffd98a}form{display:flex;gap:6px;margin:0 0 7px}input{height:32px;min-width:130px;border:1px solid #3b4659;border-radius:7px;background:#0b0d12;color:#f6f7f9;padding:0 8px}button{height:32px;border:1px solid #3b4659;border-radius:7px;background:#1a2030;color:#f6f7f9;padding:0 10px;font-weight:700;white-space:nowrap;cursor:pointer}.primary{background:#f6f7f9;color:#0d0f14;border-color:#f6f7f9}.danger{color:#ffb4a8}.empty{color:#95a1b5;text-align:center;padding:26px}@media(max-width:720px){.page{width:calc(100vw - 20px);padding-top:16px}header{display:block}.summary{grid-template-columns:1fr}header form{margin-top:12px}}
+</style>
+</head><body><main class="page"><header><div><p class="eyebrow">Relay admin</p><h1>Codex Mini Relay</h1><p class="muted">只展示设备元数据，不记录设备密钥、会话 cookie、请求正文或 Codex 回复内容。</p></div><form method="post" action="logout"><button type="submit">退出管理端</button></form></header><section class="summary"><div class="metric"><strong>${devices.length}</strong><span>全部设备</span></div><div class="metric"><strong>${pendingCount}</strong><span>等待授权</span></div><div class="metric"><strong>${onlineCount}</strong><span>当前在线</span></div></section><section class="table-wrap"><table><thead><tr><th>状态</th><th>设备名称</th><th>Device ID</th><th>Fingerprint</th><th>IP</th><th>在线时长</th><th>最近请求</th><th>总请求</th><th>并发</th><th>分钟请求</th><th>最后错误</th><th>Session</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></section></main></body></html>`);
 }
 
 function isDeviceOnline(deviceId) {
@@ -938,9 +1036,15 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/admin/device/passphrase') return handleAdminDevicePassphrase(req, res);
   if (url.pathname === '/admin/device/approve') return handleAdminDeviceApprove(req, res);
   if (url.pathname === '/admin/device/revoke') return handleAdminDeviceRevoke(req, res);
+  if ((req.method === 'GET' || req.method === 'HEAD') && stripPublicBasePath(url.pathname) === '/favicon.ico') {
+    if (serveRelayAsset(req, res, url.pathname)) return;
+  }
 
   const device = getSessionDevice(req);
-  if (!device) return handleLoginPage(req, res);
+  if (!device) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && serveRelayAsset(req, res, url.pathname)) return;
+    return handleLoginPage(req, res);
+  }
   return proxyToDevice(req, res, device);
 });
 

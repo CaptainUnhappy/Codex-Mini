@@ -107,6 +107,7 @@ function Register-Device($Config) {
     name = $Config.name
     relaySecret = $Config.relaySecret
     passphrase = $Config.passphrase
+    fingerprint = $Config.fingerprint
   } | ConvertTo-Json -Depth 4
 
   $registerUrl = "$PublicBase/device/register"

@@ -3847,6 +3847,7 @@ async function handleSend(req, res) {
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   let pathname = decodeURIComponent(url.pathname);
+  pathname = stripStaticBasePath(pathname);
   if (pathname === '/') pathname = '/index.html';
 
   const filePath = path.normalize(path.join(PUBLIC_DIR, pathname));
@@ -3873,6 +3874,16 @@ function serveStatic(req, res) {
     res.writeHead(200, headers);
     res.end(req.method === 'HEAD' ? undefined : data);
   });
+}
+
+function stripStaticBasePath(pathname) {
+  for (const prefix of ['/codex', '/codex-mini', '/mini']) {
+    if (pathname === prefix) return '/';
+    if (pathname.startsWith(`${prefix}/`)) return pathname.slice(prefix.length) || '/';
+  }
+  const relayMatch = pathname.match(/^\/r\/[^/]+(\/.*)?$/);
+  if (relayMatch) return relayMatch[1] || '/';
+  return pathname;
 }
 
 function getLanApiBases() {

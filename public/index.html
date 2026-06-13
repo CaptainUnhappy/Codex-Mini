@@ -1708,6 +1708,8 @@
     const CONTEXT_DISPLAY_MODE_STORAGE_KEY = 'codexMini.contextDisplayMode.v1';
     const normalizeBaseUrl = value => String(value || '').trim().replace(/\/+$/, '');
     const currentApiBase = normalizeBaseUrl(`${location.origin}${basePath}`);
+    const securePage = location.protocol === 'https:';
+    const publicRelayPage = securePage && Boolean(basePath);
     let apiCandidates = [];
     let activeApiBase = currentApiBase;
     let activeApiLabel = '本地';
@@ -2501,9 +2503,19 @@
       if (candidate?.kind === 'relay') return candidate.label || '外网';
       return candidate?.label || '本地';
     }
+    function canUseApiCandidate(baseUrl) {
+      try {
+        const url = new URL(baseUrl, location.href);
+        if (securePage && url.protocol === 'http:') return false;
+        return true;
+      } catch {
+        return false;
+      }
+    }
     function makeCandidate(id, baseUrl, label, kind, priority) {
       const normalized = normalizeBaseUrl(baseUrl);
       if (!normalized) return null;
+      if (!canUseApiCandidate(normalized)) return null;
       return { id, baseUrl: normalized, label, kind, priority };
     }
     function mergeApiCandidates(candidates) {
@@ -2615,6 +2627,11 @@
           ...relayApiBases.map((base, index) => makeCandidate(`relay-${index}`, base, '外网', 'relay', 20 + index)),
         ].filter(Boolean);
         mergeApiCandidates(configured);
+        if (currentIsRelay && activeApiBase === currentApiBase) {
+          activeApiLabel = '外网';
+          activeApiKind = 'relay';
+          updateRouteBadge();
+        }
         if (localOnlyMode) {
           apiCandidates = apiCandidates.filter(candidate => candidate.kind === 'local' || candidate.baseUrl === currentApiBase);
           if (activeApiKind !== 'local' && apiCandidates.length) {
@@ -5438,7 +5455,7 @@
     renderReasoningBadge(bestReasoningMode(null, selectedThreadId));
     renderModelBadge(bestModelInfo(null, selectedThreadId));
     loadApiConfig()
-      .then(() => chooseApiCandidate({ preferLocal: true, quiet: true }))
+      .then(() => chooseApiCandidate({ preferLocal: !publicRelayPage, quiet: true }))
       .then(() => loadThreads())
       .then(async () => {
         await refreshKeepAwakeStatus();
