@@ -2031,6 +2031,7 @@ const RELAY_HOP_BY_HOP_HEADERS = new Set([
 ]);
 let relayReconnectTimer = null;
 let relayReconnectDelayMs = 1000;
+let relayApprovalNoticeShown = false;
 
 function relayHmac(value) {
   return crypto.createHmac('sha256', RELAY_SECRET).update(String(value || '')).digest('base64url');
@@ -2170,6 +2171,7 @@ function startRelayClient() {
     const ws = new WebSocket(relayTunnelUrl(), { handshakeTimeout: 10000 });
     ws.on('open', () => {
       relayReconnectDelayMs = 1000;
+      relayApprovalNoticeShown = false;
       console.log(`Relay connected as ${RELAY_DEVICE_ID}.`);
     });
     ws.on('message', raw => handleRelayTunnelMessage(ws, raw));
@@ -2185,7 +2187,10 @@ function startRelayClient() {
     ws.on('error', error => {
       const message = String(error && error.message || '');
       if (/Unexpected server response:\s*401/i.test(message)) {
-        console.warn(`Relay rejected this device (401). If this is a new computer, approve "${RELAY_DEVICE_ID}" in ${RELAY_PUBLIC_BASE || 'the relay admin page'}/admin/ and keep this window open; it will reconnect automatically.`);
+        if (!relayApprovalNoticeShown) {
+          relayApprovalNoticeShown = true;
+          console.warn(`Waiting for relay authorization: approve "${RELAY_DEVICE_ID}" in ${RELAY_PUBLIC_BASE || 'the relay admin page'}/admin/.`);
+        }
         return;
       }
       console.warn(`Relay connection error: ${message}`);
