@@ -24,6 +24,10 @@ $StateRoot = if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
   Join-Path $env:APPDATA 'CodexMini'
 }
 $DeviceConfigPath = Join-Path $StateRoot 'relay-device.json'
+$RuntimeRoot = Join-Path $ProjectDir '.runtime'
+$NodeRoot = Join-Path $RuntimeRoot 'node'
+$script:NodeExe = ''
+$script:NpmCmd = ''
 
 function ConvertTo-Base64Url([byte[]] $Bytes) {
   return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
@@ -125,11 +129,99 @@ function Load-Or-CreateDeviceConfig {
   return Get-Content -LiteralPath $DeviceConfigPath -Raw | ConvertFrom-Json
 }
 
+function Set-NodeCommands([string] $NodePath, [string] $NpmPath) {
+  $script:NodeExe = $NodePath
+  $script:NpmCmd = $NpmPath
+  $nodeDir = Split-Path -Parent $NodePath
+  if ($env:Path -notlike "*$nodeDir*") {
+    $env:Path = "$nodeDir;$env:Path"
+  }
+}
+
+function Get-PortableNodeArch {
+  $arch = "$env:PROCESSOR_ARCHITEW6432 $env:PROCESSOR_ARCHITECTURE"
+  if ($arch -match 'ARM64') { return 'win-arm64' }
+  return 'win-x64'
+}
+
+function Install-PortableNode {
+  New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+  $arch = Get-PortableNodeArch
+  $baseUrl = 'https://nodejs.org/dist/latest-v24.x'
+  $sumsUrl = "$baseUrl/SHASUMS256.txt"
+
+  Write-Host ''
+  Write-Host 'Node.js was not found. Downloading portable Node.js into this folder...'
+  Write-Host "Architecture: $arch"
+
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  $sums = (Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -TimeoutSec 60).Content
+  $zipName = $null
+  $expectedHash = $null
+  foreach ($line in ($sums -split "`n")) {
+    if ($line -match "^([a-fA-F0-9]{64})\s+(node-v[0-9]+\.[0-9]+\.[0-9]+-$arch\.zip)") {
+      $expectedHash = $Matches[1].ToLowerInvariant()
+      $zipName = $Matches[2]
+      break
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($zipName)) {
+    throw "Could not find a Node.js Windows zip for $arch."
+  }
+
+  $zipUrl = "$baseUrl/$zipName"
+  $zipPath = Join-Path $RuntimeRoot $zipName
+  $expandedName = [IO.Path]::GetFileNameWithoutExtension($zipName)
+  $expandedPath = Join-Path $RuntimeRoot $expandedName
+
+  Write-Host "Downloading $zipName..."
+  Invoke-WebRequest -UseBasicParsing -Uri $zipUrl -OutFile $zipPath -TimeoutSec 180
+  $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+  if ($actualHash -ne $expectedHash) {
+    Remove-Item -LiteralPath $zipPath -Force
+    throw 'Downloaded Node.js zip failed SHA256 verification.'
+  }
+
+  if (Test-Path -LiteralPath $expandedPath) {
+    Remove-Item -LiteralPath $expandedPath -Recurse -Force
+  }
+  if (Test-Path -LiteralPath $NodeRoot) {
+    Remove-Item -LiteralPath $NodeRoot -Recurse -Force
+  }
+  Expand-Archive -LiteralPath $zipPath -DestinationPath $RuntimeRoot -Force
+  Move-Item -LiteralPath $expandedPath -Destination $NodeRoot
+
+  $nodePath = Join-Path $NodeRoot 'node.exe'
+  $npmPath = Join-Path $NodeRoot 'npm.cmd'
+  if (!(Test-Path -LiteralPath $nodePath) -or !(Test-Path -LiteralPath $npmPath)) {
+    throw 'Portable Node.js download did not contain node.exe and npm.cmd.'
+  }
+  Set-NodeCommands $nodePath $npmPath
+}
+
+function Ensure-NodeRuntime {
+  $portableNode = Join-Path $NodeRoot 'node.exe'
+  $portableNpm = Join-Path $NodeRoot 'npm.cmd'
+  if ((Test-Path -LiteralPath $portableNode) -and (Test-Path -LiteralPath $portableNpm)) {
+    Set-NodeCommands $portableNode $portableNpm
+    return
+  }
+
+  $systemNode = Get-Command node -ErrorAction SilentlyContinue
+  $systemNpm = Get-Command npm -ErrorAction SilentlyContinue
+  if ($systemNode -and $systemNpm) {
+    Set-NodeCommands $systemNode.Source $systemNpm.Source
+    return
+  }
+
+  Install-PortableNode
+}
+
 function Ensure-NodeDependencies {
   if (Test-Path -LiteralPath (Join-Path $ProjectDir 'node_modules\ws')) { return }
   Write-Host ''
   Write-Host 'Installing Node dependencies...'
-  & npm install
+  & $script:NpmCmd install
   if ($LASTEXITCODE -ne 0) {
     throw 'npm install failed.'
   }
@@ -143,6 +235,7 @@ $env:CODEX_MINI_RELAY_DEVICE_ID = [string]$device.deviceId
 $env:CODEX_MINI_RELAY_SECRET = [string]$device.relaySecret
 $env:CODEX_MINI_RELAY_PASSPHRASE = [string]$device.passphrase
 
+Ensure-NodeRuntime
 Ensure-NodeDependencies
 
 Write-Host ''
@@ -155,4 +248,4 @@ Write-Host ''
 Write-Host 'Keep this window open while using the phone client.'
 Write-Host ''
 
-& npm start
+& $script:NpmCmd start
