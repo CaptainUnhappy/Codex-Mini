@@ -2189,7 +2189,7 @@ function startRelayClient() {
       if (/Unexpected server response:\s*401/i.test(message)) {
         if (!relayApprovalNoticeShown) {
           relayApprovalNoticeShown = true;
-          console.warn(`Waiting for relay authorization: approve "${RELAY_DEVICE_ID}" in ${RELAY_PUBLIC_BASE || 'the relay admin page'}/admin/.`);
+          console.warn('Waiting for relay authorization.');
         }
         return;
       }
@@ -3957,7 +3957,7 @@ server.listen(PORT, HOST, () => {
   console.log('Keep this terminal open while using Codex Mini.');
   for (const url of urls) console.log(`  ${url}`);
   if (RELAY_PUBLIC_BASE) printRelayQr();
-  console.log('\nTip: for relay use, approve new devices in the relay admin page first. Press Ctrl+C to stop.\n');
+  console.log('\nPress Ctrl+C to stop.\n');
   startRelayClient();
 });
 
