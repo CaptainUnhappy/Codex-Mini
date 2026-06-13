@@ -209,10 +209,10 @@ function reloadDevicesIfChanged() {
   }
 }
 
-function findDeviceByPassphrase(passphrase) {
+function findDeviceByPassphrase(passphrase, options = {}) {
   reloadDevicesIfChanged();
   for (const device of registry.devices) {
-    if (device.approved === false) continue;
+    if (device.approved === false && options.includePending !== true) continue;
     if (verifyPassphrase(passphrase, device.passphraseHash)) return device;
   }
   return null;
@@ -444,11 +444,16 @@ async function handleLogin(req, res) {
     return json(res, 401, { ok: false, code: 'BAD_PASSPHRASE', message: '设备密钥不正确。' });
   }
 
-  const device = findDeviceByPassphrase(passphrase);
+  const device = findDeviceByPassphrase(passphrase, { includePending: true });
   if (!device) {
     recordLoginFailure(req);
     logMeta('login_failed', { ip: clientIp(req) });
     return json(res, 401, { ok: false, code: 'BAD_PASSPHRASE', message: '设备密钥不正确。' });
+  }
+
+  if (device.approved === false) {
+    logMeta('login_pending_authorization', { deviceId: device.deviceId, ip: clientIp(req) });
+    return json(res, 403, { ok: false, code: 'DEVICE_PENDING_AUTHORIZATION', message: '等待授权' });
   }
 
   recordLoginSuccess(req);
