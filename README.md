@@ -16,17 +16,23 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 
 ## 当前发布版本
 
-- 版本：v4.3.1（macOS 与 Windows 已对齐）
-- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[下载 Codex.Mini.v4.3.1.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.1/Codex.Mini.v4.3.1.dmg)
-- 💻 macOS · Intel 芯片（x86）：[下载 Codex.Mini.Intel.v4.3.1.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.1/Codex.Mini.Intel.v4.3.1.dmg)
-- 🪟 Windows（10 / 11，64 位）：[下载 CodexMiniWindowsSetup-v4.3.1.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.1/CodexMiniWindowsSetup-v4.3.1.exe)
+- 版本：v4.3.2（macOS 与 Windows 已对齐）
+- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[下载 Codex.Mini.v4.3.2.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.2/Codex.Mini.v4.3.2.dmg)
+- 💻 macOS · Intel 芯片（x86）：[下载 Codex.Mini.Intel.v4.3.2.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.2/Codex.Mini.Intel.v4.3.2.dmg)
+- 🪟 Windows（10 / 11，64 位）：[下载 CodexMiniWindowsSetup-v4.3.2.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.2/CodexMiniWindowsSetup-v4.3.2.exe)
 - 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
-- Release 页面：[codex-mini-v4.3.1](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.3.1)
+- Release 页面：[codex-mini-v4.3.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.3.2)
 - 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node），装完从桌面或开始菜单启动
 
-### 最新版 V4.3.1
+### 最新版 V4.3.2
 
-- **兼容 Codex++（本版重点）**：检测到 Codex++ 后，手机端免点击直接控制同一个 Codex，无需为两者分别开启 Codex，两者可以同时共存协作
+- **数学公式正常显示**：聊天里的 LaTeX 公式（如 `$$…$$`、`\(…\)`）会渲染成清晰的数学排版，不再显示成原始代码
+- **长公式不再撑变形**：较长的数学公式现在会单独在自己的区域内左右滑动查看，聊天气泡和输入框宽度保持正常
+- 修复英文界面下无法新建对话的问题
+
+### V4.3.1
+
+- **兼容 Codex++**：检测到 Codex++ 后，手机端免点击直接控制同一个 Codex，无需为两者分别开启 Codex，两者可以同时共存协作
 - 设置页新增「Bug 反馈」入口：遇到问题可以直接从手机提交截图和文字反馈
 - 内置前端热更新机制：常用界面的小改进能更快、更稳地下发到你的 App
 - 控制面板右下角显示版本号
