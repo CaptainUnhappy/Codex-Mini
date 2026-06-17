@@ -3,6 +3,34 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location -LiteralPath $ProjectDir
 
+$LogDir = Join-Path $ProjectDir (Join-Path 'logs' (Get-Date -Format 'yyyy-MM-dd'))
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$script:LogPath = Join-Path $LogDir ("desktop-windows-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$script:TranscriptStarted = $false
+try {
+  Start-Transcript -Path $script:LogPath -Append | Out-Null
+  $script:TranscriptStarted = $true
+  Write-Host "Log file: $script:LogPath"
+} catch {
+  Write-Warning "Could not start transcript logging: $($_.Exception.Message)"
+}
+
+function Stop-DesktopLog {
+  if (!$script:TranscriptStarted) { return }
+  try {
+    Stop-Transcript | Out-Null
+  } catch {
+  }
+  $script:TranscriptStarted = $false
+}
+
+trap {
+  Write-Host ''
+  Write-Host "Fatal error: $($_.Exception.Message)"
+  Stop-DesktopLog
+  throw
+}
+
 $DefaultPublicBase = 'https://114.55.235.80/codex'
 $RegistrationKeyPlaceholder = '__CODEX_MINI_RELAY_REGISTRATION_KEY__'
 $DefaultRegistrationKey = '__CODEX_MINI_RELAY_REGISTRATION_KEY__'
@@ -219,7 +247,7 @@ function Ensure-NodeRuntime {
 
 function Ensure-NodeDependencies {
   $missing = @()
-  foreach ($module in @('node_modules\ws', 'node_modules\qrcode')) {
+  foreach ($module in @('node_modules\ws', 'node_modules\qrcode', 'node_modules\qrcode-terminal')) {
     if (!(Test-Path -LiteralPath (Join-Path $ProjectDir $module))) {
       $missing += $module
     }
@@ -256,3 +284,6 @@ Write-Host 'Keep this window open while using the phone client.'
 Write-Host ''
 
 & $script:NpmCmd start
+$exitCode = $LASTEXITCODE
+Stop-DesktopLog
+exit $exitCode
