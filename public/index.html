@@ -42,7 +42,7 @@
       --keyboard-composer-gap: 0px;
       --keyboard-shift-trim: 15px;
       --keyboard-gap-bg: #0d0d0d;
-      --composer-bottom-pad: max(56px, calc(env(safe-area-inset-bottom) + 30px));
+      --composer-bottom-pad: max(20px, calc(env(safe-area-inset-bottom) + 10px));
       --dot-core: color(display-p3 .42 1 .68);
       --dot-glow-soft: color(display-p3 .18 1 .48 / .52);
       --dot-glow-peak: color(display-p3 .56 1 .78);
@@ -155,6 +155,26 @@
       color: var(--ok);
       border-color: rgba(142,240,183,.28);
       background: rgba(142,240,183,.11);
+    }
+    .route-badge.is-logout {
+      width: var(--top-control-size);
+      min-width: var(--top-control-size);
+      grid-template-columns: 1fr;
+      gap: 0;
+      padding: 0;
+      color: #ff9a8d;
+      border-color: rgba(255,141,141,.26);
+      background: rgba(255,141,141,.09);
+    }
+    .route-badge.is-logout #route-text {
+      display: none;
+    }
+    .route-badge.is-logout:active:not(:disabled) {
+      background: rgba(255,141,141,.14);
+    }
+    .route-badge:disabled {
+      opacity: .52;
+      cursor: wait;
     }
     .route-badge.is-hidden-slot {
       visibility: hidden;
@@ -476,7 +496,6 @@
       cursor: pointer;
       touch-action: manipulation;
     }
-    body.public-relay .logout-btn { display: inline-grid; }
     .logout-btn:active:not(:disabled) {
       transform: scale(.94);
       background: rgba(255,141,141,.14);
@@ -502,6 +521,7 @@
       max-width: calc(100vw - 148px);
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 8px;
       min-width: 0;
       overflow-x: auto;
@@ -512,7 +532,6 @@
       touch-action: pan-x;
     }
     .top-actions::-webkit-scrollbar { display: none; }
-    .top-actions > :first-child { margin-left: auto; }
     .thread-menu-scrim {
       position: fixed;
       left: 0;
@@ -1559,8 +1578,8 @@
       .thread-name { max-width: min(48vw, 300px); }
       .new-thread-btn svg { width: 12px; height: 12px; }
       .top-actions {
-        flex-basis: min(46vw, 184px);
-        width: min(46vw, 184px);
+        flex-basis: min(48vw, 198px);
+        width: min(48vw, 198px);
         max-width: calc(100vw - 144px);
         gap: 6px;
       }
@@ -1579,7 +1598,7 @@
     body.standalone .thread { padding-top: 16px; }
     body.standalone .composer-shell {
       padding-top: var(--thread-composer-gap);
-      padding-bottom: max(56px, calc(env(safe-area-inset-bottom) + 22px));
+      padding-bottom: var(--composer-bottom-pad);
     }
   </style>
 </head>
@@ -1776,6 +1795,7 @@
     let currentModelInfo = null;
     let switchingModel = false;
     let routeBadgeCompact = false;
+    let logoutBusy = false;
     let foregroundDotBusy = false;
     const savedContextDisplayMode = Number(localStorage.getItem(CONTEXT_DISPLAY_MODE_STORAGE_KEY));
     let contextDisplayMode = Number.isInteger(savedContextDisplayMode) && savedContextDisplayMode >= 0 && savedContextDisplayMode <= 2 ? savedContextDisplayMode : 0;
@@ -2488,6 +2508,9 @@
       }
       return '<path d="M17.5 19H9a6 6 0 1 1 5.6-8.14A4.5 4.5 0 1 1 17.5 19Z"></path>';
     }
+    function logoutIconMarkup() {
+      return '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path>';
+    }
     const PIN_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"></path><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V4h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1z"></path></svg>';
     const ARCHIVE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="5" x="2" y="3" rx="1"></rect><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"></path><path d="M10 12h4"></path></svg>';
     const RENAME_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
@@ -2496,6 +2519,14 @@
     threadActionRenameIcon.innerHTML = RENAME_ICON;
     threadActionPinToggleIcon.innerHTML = PIN_ICON;
     function updateRouteBadge() {
+      if (publicRelayPage) {
+        routeBadge.className = 'route-badge is-logout';
+        routeIcon.innerHTML = logoutIconMarkup();
+        routeText.textContent = '';
+        routeBadge.title = '退出当前登录设备';
+        routeBadge.setAttribute('aria-label', routeBadge.title);
+        return;
+      }
       const text = routeTextForKind(activeApiKind);
       routeBadge.className = `route-badge is-${activeApiKind === 'relay' ? 'relay' : 'local'} is-hidden-slot`;
       routeIcon.innerHTML = routeIconMarkup(activeApiKind);
@@ -2687,8 +2718,10 @@
     }
 
     async function logoutSession() {
-      if (!logoutButton || logoutButton.disabled) return;
-      logoutButton.disabled = true;
+      if (logoutBusy) return;
+      logoutBusy = true;
+      if (logoutButton) logoutButton.disabled = true;
+      if (routeBadge) routeBadge.disabled = true;
       setNotice('Logging out...', 'ok');
       try {
         localStorage.removeItem('codexMini.token');
@@ -5379,7 +5412,11 @@
       event.stopPropagation();
       closeReasoningMenu();
       closeModelMenu();
-      toggleRouteBadgeCompact();
+      if (publicRelayPage) {
+        logoutSession();
+      } else {
+        toggleRouteBadgeCompact();
+      }
     });
     logoutButton.addEventListener('click', event => {
       event.preventDefault();

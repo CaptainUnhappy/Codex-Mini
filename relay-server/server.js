@@ -214,11 +214,16 @@ function reloadDevicesIfChanged() {
 
 function findDeviceByPassphrase(passphrase, options = {}) {
   reloadDevicesIfChanged();
+  const matches = [];
   for (const device of registry.devices) {
     if (device.approved === false && options.includePending !== true) continue;
-    if (verifyPassphrase(passphrase, device.passphraseHash)) return device;
+    if (verifyPassphrase(passphrase, device.passphraseHash)) matches.push(device);
   }
-  return null;
+  if (matches.length <= 1) return matches[0] || null;
+  const onlineApproved = matches.find(device => device.approved !== false && isDeviceOnline(device.deviceId));
+  if (onlineApproved) return onlineApproved;
+  const approved = matches.find(device => device.approved !== false);
+  return approved || matches[0] || null;
 }
 
 function makeSessionCookie(device) {
@@ -343,6 +348,23 @@ function stripPublicBasePath(pathname) {
 
 function serveRelayAsset(req, res, pathname) {
   const assetPath = stripPublicBasePath(pathname);
+  if (assetPath === '/vendor/jsQR.js') {
+    const filePath = path.join(__dirname, '..', 'node_modules', 'jsqr', 'dist', 'jsQR.js');
+    fs.readFile(filePath, (error, data) => {
+      if (error) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('Not found');
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'application/javascript; charset=utf-8',
+        'cache-control': 'public, max-age=31536000, immutable',
+        'content-length': data.length,
+      });
+      res.end(req.method === 'HEAD' ? undefined : data);
+    });
+    return true;
+  }
   if (assetPath === '/manifest.webmanifest') {
     const body = Buffer.from(JSON.stringify({
       name: 'Codex Mini Relay',
@@ -392,7 +414,28 @@ function readBody(req, maxBytes = MAX_BODY_BYTES) {
   });
 }
 
-function loginPage(message = '') {
+function publicBasePath(pathname) {
+  for (const prefix of ['/codex', '/codex-mini', '/mini']) {
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return prefix;
+  }
+  return '';
+}
+
+let cachedJsQrBrowserScript = '';
+function jsQrBrowserScript() {
+  if (cachedJsQrBrowserScript) return cachedJsQrBrowserScript;
+  try {
+    cachedJsQrBrowserScript = fs
+      .readFileSync(path.join(__dirname, '..', 'node_modules', 'jsqr', 'dist', 'jsQR.js'), 'utf8')
+      .replace(/<\/script/gi, '<\\/script');
+  } catch {
+    cachedJsQrBrowserScript = '';
+  }
+  return cachedJsQrBrowserScript;
+}
+
+function loginPage(message = '', assetBasePath = '') {
+  const jsQrScript = jsQrBrowserScript();
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -447,10 +490,11 @@ function loginPage(message = '') {
         <button class="secondary" id="camera-scan" type="button">打开摄像头扫码</button>
         <button class="secondary" id="album-scan" type="button">相册扫码</button>
       </div>
+      <input class="file-input" id="camera-file" type="file" accept="image/*" capture="environment" />
       <input class="file-input" id="qr-file" type="file" accept="image/*" />
       <div class="scanner-panel" id="scanner-panel" hidden>
         <div class="scanner-video-wrap">
-          <video id="scanner-video" playsinline muted></video>
+          <video id="scanner-video" playsinline muted autoplay></video>
           <div class="scan-frame" aria-hidden="true"></div>
         </div>
         <button class="secondary" id="close-scanner" type="button">关闭摄像头</button>
@@ -459,6 +503,7 @@ function loginPage(message = '') {
       <p class="hint">二维码里的 #k 只会填入输入框；登录成功后才会从地址栏清理。</p>
     </section>
   </main>
+  ${jsQrScript ? `<script>${jsQrScript}</script>` : ''}
   <script>
     const form = document.getElementById('login-form');
     const input = document.getElementById('passphrase');
@@ -466,6 +511,7 @@ function loginPage(message = '') {
     const message = document.getElementById('message');
     const cameraScan = document.getElementById('camera-scan');
     const albumScan = document.getElementById('album-scan');
+    const cameraFile = document.getElementById('camera-file');
     const qrFile = document.getElementById('qr-file');
     const scannerPanel = document.getElementById('scanner-panel');
     const scannerVideo = document.getElementById('scanner-video');
@@ -473,6 +519,7 @@ function loginPage(message = '') {
     let barcodeDetector = null;
     let cameraStream = null;
     let scanTimer = 0;
+    let scanCanvas = null;
     function cleanHash() {
       if (location.hash) history.replaceState(null, '', location.pathname + location.search);
     }
@@ -482,12 +529,12 @@ function loginPage(message = '') {
     }
     async function getBarcodeDetector() {
       if (!('BarcodeDetector' in window)) {
-        throw new Error('当前浏览器不支持扫码识别，请使用新版 Safari/Chrome，或手动输入设备密钥。');
+        return null;
       }
       if (!barcodeDetector) {
         if (BarcodeDetector.getSupportedFormats) {
           const formats = await BarcodeDetector.getSupportedFormats();
-          if (formats && !formats.includes('qr_code')) throw new Error('当前浏览器不支持二维码识别。');
+          if (formats && !formats.includes('qr_code')) return null;
         }
         barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
       }
@@ -523,24 +570,166 @@ function loginPage(message = '') {
       setMessage('已填入设备密钥，请点击登录。', 'ok');
       return true;
     }
+    function decodeQrFromCanvas(canvas) {
+      if (typeof window.jsQR !== 'function') return '';
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const code = window.jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'attemptBoth' });
+      return code && code.data ? code.data : '';
+    }
+    function withTimeout(promise, ms, label) {
+      let timer = 0;
+      const timeout = new Promise((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(label || 'timeout')), ms);
+      });
+      return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer));
+    }
+    function imageLoadPromise(image) {
+      if (image.complete && image.naturalWidth) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+      });
+    }
+    function imageCropCandidates(width, height, isVideo) {
+      if (isVideo) return [{ sx: 0, sy: 0, sw: width, sh: height }];
+      const candidates = [{ sx: 0, sy: 0, sw: width, sh: height }];
+      const square = Math.min(width, height);
+      const centerX = width / 2;
+      const centerY = height / 2;
+      for (const ratio of [1, 0.78, 0.58]) {
+        const size = Math.max(1, Math.round(square * ratio));
+        candidates.push({
+          sx: Math.max(0, Math.round(centerX - size / 2)),
+          sy: Math.max(0, Math.round(centerY - size / 2)),
+          sw: size,
+          sh: size,
+        });
+      }
+      const tileWidth = Math.round(width * 0.58);
+      const tileHeight = Math.round(height * 0.58);
+      for (const x of [0, width - tileWidth]) {
+        for (const y of [0, height - tileHeight]) {
+          candidates.push({
+            sx: Math.max(0, x),
+            sy: Math.max(0, y),
+            sw: Math.max(1, tileWidth),
+            sh: Math.max(1, tileHeight),
+          });
+        }
+      }
+      return candidates;
+    }
+    function drawQrCandidate(source, crop, maxSide, rotation) {
+      const sourceWidth = crop.sw;
+      const sourceHeight = crop.sh;
+      const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+      const scaledWidth = Math.max(1, Math.round(sourceWidth * scale));
+      const scaledHeight = Math.max(1, Math.round(sourceHeight * scale));
+      const rotated = rotation === 90 || rotation === 270;
+      const targetWidth = rotated ? scaledHeight : scaledWidth;
+      const targetHeight = rotated ? scaledWidth : scaledHeight;
+      scanCanvas = scanCanvas || document.createElement('canvas');
+      scanCanvas.width = targetWidth;
+      scanCanvas.height = targetHeight;
+      const context = scanCanvas.getContext('2d', { willReadFrequently: true });
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, targetWidth, targetHeight);
+      if (rotation === 90) {
+        context.translate(targetWidth, 0);
+        context.rotate(Math.PI / 2);
+      } else if (rotation === 180) {
+        context.translate(targetWidth, targetHeight);
+        context.rotate(Math.PI);
+      } else if (rotation === 270) {
+        context.translate(0, targetHeight);
+        context.rotate(-Math.PI / 2);
+      }
+      context.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, scaledWidth, scaledHeight);
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      return scanCanvas;
+    }
+    function decodeQrWithJsQr(source) {
+      const width = source.videoWidth || source.naturalWidth || source.width || 0;
+      const height = source.videoHeight || source.naturalHeight || source.height || 0;
+      if (!width || !height) return '';
+      const isVideo = Boolean(source.videoWidth);
+      const crops = imageCropCandidates(width, height, isVideo);
+      const plans = isVideo
+        ? [{ crop: crops[0], maxSide: 960, rotation: 0 }]
+        : [
+          { crop: crops[0], maxSide: 2200, rotation: 0 },
+          { crop: crops[1], maxSide: 1800, rotation: 0 },
+          { crop: crops[2], maxSide: 1800, rotation: 0 },
+          { crop: crops[3], maxSide: 1600, rotation: 0 },
+          { crop: crops[0], maxSide: 1400, rotation: 90 },
+          { crop: crops[0], maxSide: 1400, rotation: 270 },
+          { crop: crops[1], maxSide: 1400, rotation: 90 },
+          { crop: crops[1], maxSide: 1400, rotation: 270 },
+          { crop: crops[4], maxSide: 1400, rotation: 0 },
+          { crop: crops[5], maxSide: 1400, rotation: 0 },
+          { crop: crops[6], maxSide: 1400, rotation: 0 },
+          { crop: crops[7], maxSide: 1400, rotation: 0 },
+        ].filter(plan => plan.crop);
+      let lastError = null;
+      for (const plan of plans) {
+        try {
+          const candidate = drawQrCandidate(source, plan.crop, plan.maxSide, plan.rotation);
+          const raw = decodeQrFromCanvas(candidate);
+          if (raw) return raw;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError) throw lastError;
+      return '';
+    }
     async function detectQrFromSource(source) {
-      const detector = await getBarcodeDetector();
-      const codes = await detector.detect(source);
-      const first = codes && codes[0];
-      return first ? first.rawValue || '' : '';
+      let nativeError = null;
+      try {
+        const detector = await getBarcodeDetector();
+        if (detector) {
+          const codes = await detector.detect(source);
+          const first = codes && codes[0];
+          if (first && first.rawValue) return first.rawValue;
+        }
+      } catch (error) {
+        nativeError = error;
+      }
+      try {
+        return decodeQrWithJsQr(source);
+      } catch (error) {
+        if (nativeError) throw nativeError;
+        throw error;
+      }
     }
     async function decodeImageFile(file) {
       if (!file) return;
       setMessage('正在识别相册二维码...', 'ok');
       const image = new Image();
       image.decoding = 'async';
-      image.src = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(file);
+      let bitmap = null;
       try {
-        await image.decode();
+        if (window.createImageBitmap) {
+          try {
+            bitmap = await withTimeout(createImageBitmap(file, { imageOrientation: 'from-image' }), 3500, 'bitmap timeout');
+            const bitmapRaw = await detectQrFromSource(bitmap);
+            if (fillScannedKey(bitmapRaw)) return;
+          } catch {}
+        }
+        image.src = objectUrl;
+        const loaded = imageLoadPromise(image);
+        if (image.decode) {
+          await withTimeout(image.decode().catch(() => loaded), 8000, 'image decode timeout');
+        } else {
+          await withTimeout(loaded, 8000, 'image load timeout');
+        }
         const raw = await detectQrFromSource(image);
         if (!fillScannedKey(raw)) setMessage('没有识别到二维码，请换一张更清晰的图片。', '');
       } finally {
-        URL.revokeObjectURL(image.src);
+        if (bitmap && bitmap.close) bitmap.close();
+        URL.revokeObjectURL(objectUrl);
         qrFile.value = '';
       }
     }
@@ -572,16 +761,50 @@ function loginPage(message = '') {
       }
       scanTimer = window.setTimeout(scanVideoFrame, 350);
     }
+    function legacyGetUserMedia() {
+      return navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia || null;
+    }
+    function canRequestCamera() {
+      return Boolean((navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || legacyGetUserMedia());
+    }
+    function requestCameraStream(constraints) {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        return navigator.mediaDevices.getUserMedia(constraints);
+      }
+      const legacy = legacyGetUserMedia();
+      if (!legacy) return Promise.reject(new Error('camera api unavailable'));
+      return new Promise((resolve, reject) => {
+        legacy.call(navigator, constraints, resolve, reject);
+      });
+    }
+    async function openCameraStream() {
+      const attempts = [
+        { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: { facingMode: 'environment' }, audio: false },
+        { video: true, audio: false },
+      ];
+      let lastError = null;
+      for (const constraints of attempts) {
+        try {
+          return await requestCameraStream(constraints);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error('camera unavailable');
+    }
     async function startCameraScan() {
       try {
-        await getBarcodeDetector();
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('当前浏览器无法打开摄像头。');
+        if (!canRequestCamera()) {
+          setMessage('当前浏览器不支持实时摄像头，已切换为拍照扫码。', 'ok');
+          cameraFile.click();
+          return;
+        }
         cameraScan.disabled = true;
         setMessage('正在打开摄像头...', 'ok');
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false,
-        });
+        cameraStream = await openCameraStream();
+        scannerVideo.muted = true;
+        scannerVideo.playsInline = true;
         scannerVideo.srcObject = cameraStream;
         scannerPanel.hidden = false;
         await scannerVideo.play();
@@ -589,7 +812,8 @@ function loginPage(message = '') {
         scanVideoFrame();
       } catch (error) {
         stopCameraScan();
-        setMessage(error.message || '无法打开摄像头扫码。', '');
+        setMessage('无法打开实时摄像头，已切换为拍照扫码。', '');
+        cameraFile.click();
       }
     }
     async function login(passphrase) {
@@ -626,6 +850,7 @@ function loginPage(message = '') {
     }
     cameraScan.addEventListener('click', startCameraScan);
     albumScan.addEventListener('click', () => qrFile.click());
+    cameraFile.addEventListener('change', () => decodeImageFile(cameraFile.files && cameraFile.files[0]).finally(() => { cameraFile.value = ''; }).catch(error => setMessage(error.message || '拍照扫码失败。', '')));
     qrFile.addEventListener('change', () => decodeImageFile(qrFile.files && qrFile.files[0]).catch(error => setMessage(error.message || '相册扫码失败。', '')));
     closeScanner.addEventListener('click', stopCameraScan);
     window.addEventListener('pagehide', stopCameraScan);
@@ -636,7 +861,8 @@ function loginPage(message = '') {
 
 function handleLoginPage(req, res, message = '') {
   if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 401, { ok: false, code: 'UNAUTHORIZED', message: '请先登录。' });
-  html(res, 200, req.method === 'HEAD' ? '' : loginPage(message));
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  html(res, 200, req.method === 'HEAD' ? '' : loginPage(message, publicBasePath(url.pathname)));
 }
 
 async function handleLogin(req, res) {
@@ -684,7 +910,59 @@ async function handleLogin(req, res) {
 }
 
 function handleLogout(req, res) {
-  return json(res, 200, { ok: true }, { 'set-cookie': clearSessionCookieHeader() });
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const headers = { 'set-cookie': clearSessionCookieHeader() };
+  if (url.searchParams.get('next') === 'login') {
+    return redirect(res, './', headers);
+  }
+  return json(res, 200, { ok: true }, headers);
+}
+
+function wantsHtmlPage(req) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  const fetchMode = String(req.headers['sec-fetch-mode'] || '');
+  const accept = String(req.headers.accept || '');
+  return fetchMode === 'navigate' || accept.includes('text/html');
+}
+
+function deviceOfflinePage(req, device) {
+  const deviceName = htmlEscape(device.name || device.deviceId || 'Codex Mini');
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>设备离线 - Codex Mini</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f7f9; color: #171a1f; }
+    main { width: min(420px, calc(100vw - 32px)); }
+    h1 { margin: 0 0 10px; font-size: 24px; line-height: 1.2; letter-spacing: 0; }
+    p { margin: 0 0 18px; color: #555c68; line-height: 1.6; }
+    .panel { border: 1px solid #d9dde5; border-radius: 8px; background: #fff; padding: 24px; box-shadow: 0 12px 40px rgba(20, 28, 40, .08); }
+    .device { font-size: 13px; color: #6b7280; word-break: break-all; }
+    button { width: 100%; border: 0; border-radius: 8px; min-height: 46px; padding: 0 16px; font-size: 16px; font-weight: 700; color: #fff; background: #1f6feb; }
+    button:active { transform: scale(.99); }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111318; color: #f4f6fb; }
+      .panel { background: #191d24; border-color: #2d3440; box-shadow: none; }
+      p, .device { color: #aab2c0; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="panel">
+      <h1>设备离线</h1>
+      <p>当前桌面端未连接到中继服务器。可以切换到另一台已授权设备。</p>
+      <p class="device">${deviceName}</p>
+      <form method="post" action="logout?next=login">
+        <button type="submit">切换设备</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>`;
 }
 
 function isAdmin(req) {
@@ -1049,6 +1327,9 @@ function sanitizeResponseHeaders(headers, bodyLength) {
 async function proxyToDevice(req, res, device) {
   const tunnel = tunnels.get(device.deviceId);
   if (!tunnel || tunnel.ws.readyState !== 1) {
+    if (wantsHtmlPage(req)) {
+      return html(res, 503, req.method === 'HEAD' ? '' : deviceOfflinePage(req, device));
+    }
     return json(res, 503, { ok: false, code: 'DEVICE_OFFLINE', message: '设备离线。' });
   }
 

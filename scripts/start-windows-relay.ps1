@@ -32,6 +32,10 @@ trap {
 }
 
 $DefaultPublicBase = 'https://114.55.235.80/codex'
+$LocalEnvPath = Join-Path $ProjectDir 'desktop-env.local.ps1'
+if (Test-Path -LiteralPath $LocalEnvPath) {
+  . $LocalEnvPath
+}
 $RegistrationKeyPlaceholder = '__CODEX_MINI_RELAY_REGISTRATION_KEY__'
 $DefaultRegistrationKey = '__CODEX_MINI_RELAY_REGISTRATION_KEY__'
 $PublicBase = if ([string]::IsNullOrWhiteSpace($env:CODEX_MINI_RELAY_PUBLIC_BASE)) { $DefaultPublicBase } else { $env:CODEX_MINI_RELAY_PUBLIC_BASE }
@@ -157,13 +161,54 @@ function Load-Or-CreateDeviceConfig {
   return Get-Content -LiteralPath $DeviceConfigPath -Raw | ConvertFrom-Json
 }
 
+function Resolve-NpmCmd([string] $NpmPath) {
+  if ([string]::IsNullOrWhiteSpace($NpmPath)) {
+    throw 'npm command is not configured.'
+  }
+
+  if ([IO.Path]::GetExtension($NpmPath) -ieq '.cmd') {
+    return $NpmPath
+  }
+
+  $npmDir = Split-Path -Parent $NpmPath
+  if (![string]::IsNullOrWhiteSpace($npmDir)) {
+    $adjacentCmd = Join-Path $npmDir 'npm.cmd'
+    if (Test-Path -LiteralPath $adjacentCmd) {
+      return $adjacentCmd
+    }
+  }
+
+  $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if ($npmCmd) {
+    return $npmCmd.Source
+  }
+
+  throw 'npm.cmd was not found. Install Node.js for Windows or allow the script to install portable Node.js.'
+}
+
 function Set-NodeCommands([string] $NodePath, [string] $NpmPath) {
   $script:NodeExe = $NodePath
-  $script:NpmCmd = $NpmPath
+  $script:NpmCmd = Resolve-NpmCmd $NpmPath
   $nodeDir = Split-Path -Parent $NodePath
   if ($env:Path -notlike "*$nodeDir*") {
     $env:Path = "$nodeDir;$env:Path"
   }
+}
+
+function Invoke-Npm {
+  param(
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]] $Arguments
+  )
+
+  $npmCmd = $script:NpmCmd
+  if ([string]::IsNullOrWhiteSpace($npmCmd)) {
+    throw 'npm command is not configured.'
+  }
+  if ([IO.Path]::GetExtension($npmCmd) -ieq '.ps1') {
+    throw 'npm.ps1 cannot be used here because it mis-parses variable-based calls. npm.cmd is required.'
+  }
+  & $npmCmd @Arguments
 }
 
 function Get-PortableNodeArch {
@@ -255,7 +300,7 @@ function Ensure-NodeDependencies {
   if ($missing.Count -eq 0) { return }
   Write-Host ''
   Write-Host 'Installing Node dependencies...'
-  & $script:NpmCmd install
+  Invoke-Npm install
   if ($LASTEXITCODE -ne 0) {
     throw 'npm install failed.'
   }
@@ -283,7 +328,7 @@ Write-Host ''
 Write-Host 'Keep this window open while using the phone client.'
 Write-Host ''
 
-& $script:NpmCmd start
+Invoke-Npm start
 $exitCode = $LASTEXITCODE
 Stop-DesktopLog
 exit $exitCode

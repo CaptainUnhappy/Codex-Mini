@@ -3,9 +3,13 @@
     "start": "node server.js",
     "relay": "node relay-server/server.js",
     "relay:create-device": "node relay-server/create-device.js",
-    "check": "node --check server.js && node --check relay-server/server.js && node --check relay-server/create-device.js && node --check relay-server/lib/crypto.js"
+    "check": "node --check server.js && node --check relay-server/server.js && node --check relay-server/create-device.js && node --check relay-server/lib/crypto.js && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-windows-relay-script.ps1 && python -c \"import ast,pathlib; ast.parse(pathlib.Path('scripts/package-release.py').read_text(encoding='utf-8'))\"",
+    "package:desktop": "python scripts/package-release.py desktop",
+    "package:server": "python scripts/package-release.py server",
+    "package:all": "python scripts/package-release.py all"
   },
   "dependencies": {
+    "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "ws": "^8.18.0"
