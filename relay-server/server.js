@@ -415,9 +415,19 @@ function loginPage(message = '') {
     input { border: 1px solid #3b4659; padding: 0 12px; background: #0b0d12; color: #f6f7f9; outline: none; }
     input:focus { border-color: #7aa7ff; box-shadow: 0 0 0 3px rgba(122,167,255,.18); }
     button { border: 0; background: #f6f7f9; color: #0d0f14; font-weight: 750; cursor: pointer; }
+    button.secondary { border: 1px solid #3b4659; background: #151a24; color: #e6ecf7; }
     button:disabled { cursor: wait; opacity: .64; }
+    .scan-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 12px; }
+    .scan-actions button { height: 40px; font-size: 14px; }
+    .file-input { position: fixed; left: -9999px; top: -9999px; width: 1px; height: 1px; opacity: 0; }
+    .scanner-panel { display: grid; gap: 10px; margin: 12px 0 0; }
+    .scanner-panel[hidden] { display: none; }
+    .scanner-video-wrap { position: relative; overflow: hidden; border: 1px solid #2f3a4e; border-radius: 8px; background: #05070b; aspect-ratio: 1 / 1; }
+    video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .scan-frame { position: absolute; inset: 18%; border: 2px solid rgba(246,247,249,.9); border-radius: 16px; box-shadow: 0 0 0 999px rgba(0,0,0,.28); pointer-events: none; }
     .message { min-height: 20px; margin: 12px 0 0; color: #ffb4a8; font-size: 14px; line-height: 1.45; }
     .message.is-pending { color: #ffd98a; }
+    .message.is-ok { color: #8ff0b6; }
     .hint { margin: 14px 0 0; color: #7f8ca2; font-size: 12px; line-height: 1.45; }
   </style>
 </head>
@@ -433,6 +443,18 @@ function loginPage(message = '') {
         </label>
         <button id="submit" type="submit">登录</button>
       </form>
+      <div class="scan-actions">
+        <button class="secondary" id="camera-scan" type="button">打开摄像头扫码</button>
+        <button class="secondary" id="album-scan" type="button">相册扫码</button>
+      </div>
+      <input class="file-input" id="qr-file" type="file" accept="image/*" />
+      <div class="scanner-panel" id="scanner-panel" hidden>
+        <div class="scanner-video-wrap">
+          <video id="scanner-video" playsinline muted></video>
+          <div class="scan-frame" aria-hidden="true"></div>
+        </div>
+        <button class="secondary" id="close-scanner" type="button">关闭摄像头</button>
+      </div>
       <p id="message" class="message">${htmlEscape(message)}</p>
       <p class="hint">二维码里的 #k 只会填入输入框；登录成功后才会从地址栏清理。</p>
     </section>
@@ -442,12 +464,136 @@ function loginPage(message = '') {
     const input = document.getElementById('passphrase');
     const submit = document.getElementById('submit');
     const message = document.getElementById('message');
+    const cameraScan = document.getElementById('camera-scan');
+    const albumScan = document.getElementById('album-scan');
+    const qrFile = document.getElementById('qr-file');
+    const scannerPanel = document.getElementById('scanner-panel');
+    const scannerVideo = document.getElementById('scanner-video');
+    const closeScanner = document.getElementById('close-scanner');
+    let barcodeDetector = null;
+    let cameraStream = null;
+    let scanTimer = 0;
     function cleanHash() {
       if (location.hash) history.replaceState(null, '', location.pathname + location.search);
     }
+    function setMessage(text, type) {
+      message.textContent = text || '';
+      message.className = type ? 'message is-' + type : 'message';
+    }
+    async function getBarcodeDetector() {
+      if (!('BarcodeDetector' in window)) {
+        throw new Error('当前浏览器不支持扫码识别，请使用新版 Safari/Chrome，或手动输入设备密钥。');
+      }
+      if (!barcodeDetector) {
+        if (BarcodeDetector.getSupportedFormats) {
+          const formats = await BarcodeDetector.getSupportedFormats();
+          if (formats && !formats.includes('qr_code')) throw new Error('当前浏览器不支持二维码识别。');
+        }
+        barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+      }
+      return barcodeDetector;
+    }
+    function keyFromQr(rawValue) {
+      const raw = String(rawValue || '').trim();
+      if (!raw) return '';
+      try {
+        const url = new URL(raw, location.href);
+        const hashKey = new URLSearchParams(url.hash.replace(/^#/, '')).get('k');
+        if (hashKey) return hashKey.trim();
+      } catch {}
+      const match = raw.match(/(?:^|[#&])k=([^&]+)/);
+      if (match) {
+        try {
+          return decodeURIComponent(match[1].replace(/\\+/g, '%20')).trim();
+        } catch {
+          return match[1].trim();
+        }
+      }
+      if (/^[A-Za-z0-9_-]{8,160}$/.test(raw)) return raw;
+      return '';
+    }
+    function fillScannedKey(rawValue) {
+      const key = keyFromQr(rawValue);
+      if (!key) {
+        setMessage('没有从二维码中识别到 #k 设备密钥。', '');
+        return false;
+      }
+      input.value = key;
+      input.focus();
+      setMessage('已填入设备密钥，请点击登录。', 'ok');
+      return true;
+    }
+    async function detectQrFromSource(source) {
+      const detector = await getBarcodeDetector();
+      const codes = await detector.detect(source);
+      const first = codes && codes[0];
+      return first ? first.rawValue || '' : '';
+    }
+    async function decodeImageFile(file) {
+      if (!file) return;
+      setMessage('正在识别相册二维码...', 'ok');
+      const image = new Image();
+      image.decoding = 'async';
+      image.src = URL.createObjectURL(file);
+      try {
+        await image.decode();
+        const raw = await detectQrFromSource(image);
+        if (!fillScannedKey(raw)) setMessage('没有识别到二维码，请换一张更清晰的图片。', '');
+      } finally {
+        URL.revokeObjectURL(image.src);
+        qrFile.value = '';
+      }
+    }
+    function stopCameraScan() {
+      window.clearTimeout(scanTimer);
+      scanTimer = 0;
+      if (cameraStream) {
+        for (const track of cameraStream.getTracks()) track.stop();
+      }
+      cameraStream = null;
+      scannerVideo.srcObject = null;
+      scannerPanel.hidden = true;
+      cameraScan.disabled = false;
+    }
+    async function scanVideoFrame() {
+      if (!cameraStream) return;
+      try {
+        if (scannerVideo.readyState >= 2) {
+          const raw = await detectQrFromSource(scannerVideo);
+          if (raw && fillScannedKey(raw)) {
+            stopCameraScan();
+            return;
+          }
+        }
+      } catch (error) {
+        stopCameraScan();
+        setMessage(error.message || '摄像头扫码失败。', '');
+        return;
+      }
+      scanTimer = window.setTimeout(scanVideoFrame, 350);
+    }
+    async function startCameraScan() {
+      try {
+        await getBarcodeDetector();
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('当前浏览器无法打开摄像头。');
+        cameraScan.disabled = true;
+        setMessage('正在打开摄像头...', 'ok');
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        });
+        scannerVideo.srcObject = cameraStream;
+        scannerPanel.hidden = false;
+        await scannerVideo.play();
+        setMessage('请把二维码放入取景框。', 'ok');
+        scanVideoFrame();
+      } catch (error) {
+        stopCameraScan();
+        setMessage(error.message || '无法打开摄像头扫码。', '');
+      }
+    }
     async function login(passphrase) {
-      message.textContent = '';
-      message.className = 'message';
+      setMessage('', '');
       submit.disabled = true;
       submit.textContent = '正在登录...';
       try {
@@ -465,8 +611,7 @@ function loginPage(message = '') {
         cleanHash();
         location.replace('./');
       } catch (error) {
-        message.textContent = error.message || '登录失败';
-        if (error.code === 'DEVICE_PENDING_AUTHORIZATION') message.className = 'message is-pending';
+        setMessage(error.message || '登录失败', error.code === 'DEVICE_PENDING_AUTHORIZATION' ? 'pending' : '');
         submit.disabled = false;
         submit.textContent = '登录';
       }
@@ -479,6 +624,11 @@ function loginPage(message = '') {
     if (key) {
       input.value = key;
     }
+    cameraScan.addEventListener('click', startCameraScan);
+    albumScan.addEventListener('click', () => qrFile.click());
+    qrFile.addEventListener('change', () => decodeImageFile(qrFile.files && qrFile.files[0]).catch(error => setMessage(error.message || '相册扫码失败。', '')));
+    closeScanner.addEventListener('click', stopCameraScan);
+    window.addEventListener('pagehide', stopCameraScan);
   </script>
 </body>
 </html>`;
