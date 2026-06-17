@@ -1017,6 +1017,7 @@ function authenticateTunnel(req) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const routePath = stripPublicBasePath(url.pathname);
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
@@ -1025,18 +1026,18 @@ const server = http.createServer(async (req, res) => {
     });
     return res.end();
   }
-  if (url.pathname === '/health') return json(res, 200, { ok: true, service: 'codex-mini-relay', now: new Date().toISOString() });
-  if (url.pathname === '/device/register') return handleDeviceRegister(req, res);
-  if (url.pathname === '/login') return handleLogin(req, res);
-  if (url.pathname === '/logout') return handleLogout(req, res);
-  if (url.pathname === '/admin' || url.pathname === '/admin/') return handleAdminHome(req, res);
-  if (url.pathname === '/admin/login') return handleAdminLogin(req, res);
-  if (url.pathname === '/admin/logout') return handleAdminLogout(req, res);
-  if (url.pathname === '/admin/status') return handleAdminStatus(req, res);
-  if (url.pathname === '/admin/device/passphrase') return handleAdminDevicePassphrase(req, res);
-  if (url.pathname === '/admin/device/approve') return handleAdminDeviceApprove(req, res);
-  if (url.pathname === '/admin/device/revoke') return handleAdminDeviceRevoke(req, res);
-  if ((req.method === 'GET' || req.method === 'HEAD') && stripPublicBasePath(url.pathname) === '/favicon.ico') {
+  if (routePath === '/health') return json(res, 200, { ok: true, service: 'codex-mini-relay', now: new Date().toISOString() });
+  if (routePath === '/device/register') return handleDeviceRegister(req, res);
+  if (routePath === '/login') return handleLogin(req, res);
+  if (routePath === '/logout') return handleLogout(req, res);
+  if (routePath === '/admin' || routePath === '/admin/') return handleAdminHome(req, res);
+  if (routePath === '/admin/login') return handleAdminLogin(req, res);
+  if (routePath === '/admin/logout') return handleAdminLogout(req, res);
+  if (routePath === '/admin/status') return handleAdminStatus(req, res);
+  if (routePath === '/admin/device/passphrase') return handleAdminDevicePassphrase(req, res);
+  if (routePath === '/admin/device/approve') return handleAdminDeviceApprove(req, res);
+  if (routePath === '/admin/device/revoke') return handleAdminDeviceRevoke(req, res);
+  if ((req.method === 'GET' || req.method === 'HEAD') && routePath === '/favicon.ico') {
     if (serveRelayAsset(req, res, url.pathname)) return;
   }
 

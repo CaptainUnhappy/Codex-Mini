@@ -4,9 +4,9 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 
-LOG_DIR="$PROJECT_DIR/logs/$(date +%F)"
+LOG_DIR="$PROJECT_DIR/logs"
 mkdir -p "$LOG_DIR"
-LOG_PATH="$LOG_DIR/desktop-macos-$(date +%Y%m%d-%H%M%S).log"
+LOG_PATH="$LOG_DIR/$(date +%F_%H%M%S).log"
 if [[ "${CODEX_MINI_DISABLE_LOG_TEE:-0}" != '1' ]]; then
   exec > >(tee -a "$LOG_PATH") 2>&1
 fi

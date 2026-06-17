@@ -460,6 +460,42 @@
       stroke-linejoin: round;
       vector-effect: non-scaling-stroke;
     }
+    .logout-btn {
+      display: none;
+      flex: 0 0 auto;
+      width: var(--top-control-size);
+      min-width: var(--top-control-size);
+      height: var(--top-control-size);
+      appearance: none;
+      border: 1px solid rgba(255,141,141,.26);
+      border-radius: 999px;
+      background: rgba(255,141,141,.09);
+      color: #ff9a8d;
+      place-items: center;
+      padding: 0;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    body.public-relay .logout-btn { display: inline-grid; }
+    .logout-btn:active:not(:disabled) {
+      transform: scale(.94);
+      background: rgba(255,141,141,.14);
+    }
+    .logout-btn:disabled {
+      opacity: .52;
+      cursor: wait;
+    }
+    .logout-btn svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
     .top-actions {
       flex: 0 1 min(46vw, 340px);
       width: min(46vw, 340px);
@@ -1568,6 +1604,9 @@
           <svg class="route-icon" id="route-icon" viewBox="0 0 24 24" aria-hidden="true"></svg>
           <span id="route-text">本地</span>
         </button>
+        <button class="logout-btn" id="logout-session" type="button" title="Logout" aria-label="Logout">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path></svg>
+        </button>
       </div>
       <div class="model-menu-card reasoning-menu-card" id="reasoning-menu-card" aria-label="选择推理模式"></div>
       <div class="model-menu-card" id="model-menu-card" aria-label="选择模型"></div>
@@ -1642,6 +1681,7 @@
     const routeBadge = document.getElementById('route-badge');
     const routeIcon = document.getElementById('route-icon');
     const routeText = document.getElementById('route-text');
+    const logoutButton = document.getElementById('logout-session');
     const threadButton = document.getElementById('thread-button');
     const newThreadButton = document.getElementById('new-thread');
     const keepAwakeButton = document.getElementById('keep-awake');
@@ -1775,6 +1815,7 @@
     routeBadgeCompact = false;
     const isStandalone = Boolean(window.navigator.standalone) || window.matchMedia('(display-mode: standalone)').matches;
     document.body.classList.toggle('standalone', isStandalone);
+    document.body.classList.toggle('public-relay', publicRelayPage);
 
     if (queryToken) {
       document.cookie = `codexMiniToken=${encodeURIComponent(queryToken)}; Path=/; SameSite=Lax; Max-Age=31536000`;
@@ -2642,6 +2683,25 @@
           return fetchWithTimeout(apiUrl(path), requestOptions, timeoutMs);
         }
         throw error;
+      }
+    }
+
+    async function logoutSession() {
+      if (!logoutButton || logoutButton.disabled) return;
+      logoutButton.disabled = true;
+      setNotice('Logging out...', 'ok');
+      try {
+        localStorage.removeItem('codexMini.token');
+        document.cookie = 'codexMiniToken=; Path=/; SameSite=Lax; Max-Age=0';
+        await fetch(`${basePath || ''}/logout`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+      } catch (error) {
+        console.warn('Codex mini logout skipped:', error);
+      } finally {
+        location.replace(`${basePath || ''}/`);
       }
     }
 
@@ -5320,6 +5380,13 @@
       closeReasoningMenu();
       closeModelMenu();
       toggleRouteBadgeCompact();
+    });
+    logoutButton.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeReasoningMenu();
+      closeModelMenu();
+      logoutSession();
     });
     topStatus.addEventListener('pointerdown', startContextLongPress);
     topStatus.addEventListener('pointermove', moveContextLongPress);

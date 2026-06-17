@@ -3,9 +3,9 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location -LiteralPath $ProjectDir
 
-$LogDir = Join-Path $ProjectDir (Join-Path 'logs' (Get-Date -Format 'yyyy-MM-dd'))
+$LogDir = Join-Path $ProjectDir 'logs'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-$script:LogPath = Join-Path $LogDir ("desktop-windows-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$script:LogPath = Join-Path $LogDir ("{0}.log" -f (Get-Date -Format 'yyyy-MM-dd_HHmmss'))
 $script:TranscriptStarted = $false
 try {
   Start-Transcript -Path $script:LogPath -Append | Out-Null
