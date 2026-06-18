@@ -16,15 +16,15 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 
 ## 当前发布版本
 
-- 版本：v4.3.2（macOS 与 Windows 已对齐）
-- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[下载 Codex.Mini.v4.3.2.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.2/Codex.Mini.v4.3.2.dmg)
-- 💻 macOS · Intel 芯片（x86）：[下载 Codex.Mini.Intel.v4.3.2.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.2/Codex.Mini.Intel.v4.3.2.dmg)
-- 🪟 Windows（10 / 11，64 位）：[下载 CodexMiniWindowsSetup-v4.3.2.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.3.2/CodexMiniWindowsSetup-v4.3.2.exe)
+- 版本：v4.4.1（macOS 与 Windows 已对齐）
+- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[下载 CodexMini_v4.4.1_macOS_AppleSilicon.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.1/CodexMini_v4.4.1_macOS_AppleSilicon.dmg)
+- 💻 macOS · Intel 芯片（x86）：[下载 CodexMini_v4.4.1_macOS_Intel.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.1/CodexMini_v4.4.1_macOS_Intel.dmg)
+- 🪟 Windows（10 / 11，64 位）：[下载 CodexMini_v4.4.1_Windows.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.1/CodexMini_v4.4.1_Windows.exe)
 - 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
-- Release 页面：[codex-mini-v4.3.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.3.2)
+- Release 页面：[codex-mini-v4.4.1](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.4.1)
 - 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node），装完从桌面或开始菜单启动
 
-### 最新版 V4.3.2
+### 最新版 V4.4.1
 
 - **数学公式正常显示**：聊天里的 LaTeX 公式（如 `$$…$$`、`\(…\)`）会渲染成清晰的数学排版，不再显示成原始代码
 - **长公式不再撑变形**：较长的数学公式现在会单独在自己的区域内左右滑动查看，聊天气泡和输入框宽度保持正常
@@ -67,13 +67,13 @@ QQ 群：**760669553**
 
 ## Windows 版本
 
-官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMiniWindowsSetup-v4.0.0.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
+官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMini_v4.4.1_Windows.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
 
 社区项目 [atuizz/codex-max](https://github.com/atuizz/codex-max) 仍可作为另一个 Windows 方向参考。
 
 ## 安装与使用
 
-1. 按系统下载 `Codex.Mini.v4.2.3.dmg` 或 `CodexMiniWindowsSetup-v4.0.0.exe`
+1. 按系统下载对应的 `CodexMini_v4.4.1_macOS_AppleSilicon.dmg`、`CodexMini_v4.4.1_macOS_Intel.dmg` 或 `CodexMini_v4.4.1_Windows.exe`
 2. macOS 安装前完整删除旧 `Codex Mini Beta.app`，建议用第三方卸载工具清理旧 App、旧 LaunchAgent 和旧运行目录
 3. macOS 打开 DMG，把 `Codex Mini.app` 拖到 `Applications`；Windows 直接运行 EXE 安装
 4. 打开 Codex Mini
