@@ -17,9 +17,9 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 ## 当前发布版本
 
 - 版本：v4.4.2（macOS 与 Windows 已对齐）
-- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[下载 CodexMini_v4.4.2_macOS_AppleSilicon.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.2/CodexMini_v4.4.2_macOS_AppleSilicon.dmg)
-- 💻 macOS · Intel 芯片（x86）：[下载 CodexMini_v4.4.2_macOS_Intel.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.2/CodexMini_v4.4.2_macOS_Intel.dmg)
-- 🪟 Windows（10 / 11，64 位）：[下载 CodexMini_v4.4.2_Windows_Setup.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.2/CodexMini_v4.4.2_Windows_Setup.exe)
+- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[CodexMini_v4.4.2_macOS_AppleSilicon.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.2/CodexMini_v4.4.2_macOS_AppleSilicon.dmg)
+- 💻 macOS · Intel 芯片（x86）：[CodexMini_v4.4.2_macOS_Intel.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.2/CodexMini_v4.4.2_macOS_Intel.dmg)
+- 🪟 Windows（10 / 11，64 位）：[CodexMini_v4.4.2_Windows_Setup.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.2/CodexMini_v4.4.2_Windows_Setup.exe)
 - 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
 - Release 页面：[codex-mini-v4.4.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.4.2)
 - 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node），装完从桌面或开始菜单启动
