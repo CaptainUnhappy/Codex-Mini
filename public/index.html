@@ -5003,7 +5003,7 @@
             lastPhase = phase;
             lastMessage = message;
             setNotice(message, options.type || 'ok');
-            if (activeAssistant && activeAssistant.article?.classList.contains('pending')) {
+            if (options.updateBubble !== false && activeAssistant && activeAssistant.article?.classList.contains('pending')) {
               setMarkdown(activeAssistant.bubble, message);
             }
           }
@@ -5039,18 +5039,6 @@
       sendButton.disabled = true;
       setWorkingDot(true);
       setNotice(options.sendingNotice || (queueBehindActiveRun ? '正在发送到 Codex 队列…' : '正在发送到 Codex…'), 'ok');
-      try {
-        await ensureRouteForSend();
-        await syncCodexThread(selectedThreadId, { quiet: true, force: true });
-      } catch (error) {
-        setNotice(error.message || '同步 Codex 线程失败，已取消发送', 'error');
-        sendButton.disabled = false;
-        setWorkingDot(false);
-        if (hasTextOverride) restoreLayoutAfterKeyboard();
-        else textarea.focus({ preventScroll: true });
-        return;
-      }
-
       const queuedSendId = queueBehindActiveRun ? addQueuedSend(text, attachmentsToSend, 'sending', { commandKind }) : '';
       if (!queueBehindActiveRun) {
         const user = messageEl('user', text || (attachmentsToSend.length ? ' ' : ''), { label: options.userLabel || textCommandUi?.userLabel || (attachmentsToSend.length ? `你 · ${attachmentsToSend.length} 张图片` : '你') });
@@ -5058,7 +5046,7 @@
       }
       const queuedAssistant = queueBehindActiveRun
         ? null
-        : messageEl('assistant', textCommandUi?.pendingText || '已发送，等待 Codex 回复…', { label: textCommandUi ? textCommandUi.runningLabel('0s') : 'Codex · 运行 0s', pending: true });
+        : messageEl('assistant', textCommandUi?.pendingText || '正在准备发送到 Codex…', { label: textCommandUi ? textCommandUi.runningLabel('0s') : 'Codex · 运行 0s', pending: true });
       if (!queueBehindActiveRun) {
         activeAssistant = queuedAssistant;
         activeAssistant.commandKind = commandKind;
@@ -5083,8 +5071,41 @@
         autosize();
       }
       const clientRequestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const stopSendProgressPolling = startSendProgressPolling(clientRequestId);
+      const stopSendProgressPolling = startSendProgressPolling(clientRequestId, { updateBubble: !queueBehindActiveRun });
+      const setVisibleSendProgress = message => {
+        if (!message) return;
+        setNotice(message, 'ok');
+        if (!queueBehindActiveRun && activeAssistant && activeAssistant.article?.classList.contains('pending')) {
+          setMarkdown(activeAssistant.bubble, message);
+        }
+      };
       try {
+        await ensureRouteForSend();
+        if (target === 'codex') {
+          setVisibleSendProgress('正在检查 Codex 是否已启动');
+          try {
+            const params = new URLSearchParams({ token });
+            const relayStatus = await fetchApi(`/codex/relay-status?${params}`, {
+              cache: 'no-store',
+              headers: { 'x-mobile-typer-token': token },
+              apiTimeoutMs: 3500,
+              routeSwitchQuiet: true,
+              retryProbeTimeoutMs: 700,
+            }).then(response => response.json()).catch(() => null);
+            if (relayStatus && relayStatus.codexDesktopRunning === false) {
+              setVisibleSendProgress('已检测到 Codex 未启动，正在启动 Codex');
+            } else {
+              setVisibleSendProgress('正在切换到 Codex');
+            }
+          } catch {
+            setVisibleSendProgress('正在切换到 Codex');
+          }
+        }
+        if (selectedThreadId) {
+          setVisibleSendProgress('等待 Codex App 加载');
+          await syncCodexThread(selectedThreadId, { quiet: true, force: true });
+          setVisibleSendProgress('等待 Codex 输入框加载');
+        }
         const res = await fetchApi('/send', {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-mobile-typer-token': token },

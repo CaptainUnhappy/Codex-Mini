@@ -53,6 +53,7 @@ const GUI_FAILURE_REPORT_LIMIT = 80;
 const GUI_FAILURE_LOG_SCAN_BYTES = 2 * 1024 * 1024;
 const GUI_FAILURE_LOG_RECENT_MS = 15 * 60 * 1000;
 const RECENT_SEND_TTL_MS = 5 * 60 * 1000;
+const CODEX_SEND_CONFIRM_TIMEOUT_MS = Number(process.env.CODEX_MINI_SEND_CONFIRM_TIMEOUT_MS || 6000);
 const CODEX_THREAD_SYNC_FRESH_MS = 5000;
 const CODEX_DEEPLINK_SETTLE_MS = 560;
 const CODEX_APP_FOCUS_SETTLE_MS = 100;
@@ -2081,8 +2082,24 @@ function relayStatusPayload() {
   };
 }
 
-function handleRelayStatus(req, res) {
+async function handleRelayStatus(req, res) {
   if (!isAuthorized(req)) return json(res, 401, { ok: false, code: 'UNAUTHORIZED', message: '访问令牌不正确。' });
+  if (IS_WINDOWS) {
+    try {
+      const running = await isCodexDesktopRunning();
+      relayCodexDesktopRunning = running;
+      updateRelayStatus({
+        codexDesktopRunning: running,
+        codexLastCheckedAt: new Date().toISOString(),
+        lastError: running ? relayStatus.lastError : 'Codex desktop is not running',
+      });
+    } catch (error) {
+      updateRelayStatus({
+        codexLastCheckedAt: new Date().toISOString(),
+        lastError: error && error.message || 'Codex desktop check failed',
+      });
+    }
+  }
   return json(res, 200, relayStatusPayload());
 }
 
@@ -3269,18 +3286,26 @@ for ($i = 0; $i -lt $all.Count; $i++) {
   if ($rect.Y -lt $bottomCutoff) { continue }
   if (-not $button -or $rect.X -gt $button.Current.BoundingRectangle.X) { $button = $item }
 }
-if (-not $button) { throw 'Codex send button not found.' }
-try {
-  $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-  $pattern.Invoke()
-} catch {
-  $rect = $button.Current.BoundingRectangle
-  [void][CodexMiniSendButtonWin32]::SetCursorPos([int]($rect.X + ($rect.Width / 2)), [int]($rect.Y + ($rect.Height / 2)))
+if ($button) {
+  try {
+    $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $pattern.Invoke()
+  } catch {
+    $rect = $button.Current.BoundingRectangle
+    [void][CodexMiniSendButtonWin32]::SetCursorPos([int]($rect.X + ($rect.Width / 2)), [int]($rect.Y + ($rect.Height / 2)))
+    [CodexMiniSendButtonWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 45
+    [CodexMiniSendButtonWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  }
+} else {
+  $x = [int]($windowBounds.Right - [Math]::Max(34, [Math]::Min(72, $windowBounds.Width * 0.045)))
+  $y = [int]($windowBounds.Bottom - [Math]::Max(34, [Math]::Min(78, $windowBounds.Height * 0.065)))
+  [void][CodexMiniSendButtonWin32]::SetCursorPos($x, $y)
   [CodexMiniSendButtonWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 45
   [CodexMiniSendButtonWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 }
-Start-Sleep -Milliseconds 180
+Start-Sleep -Milliseconds 320
 `);
 }
 
@@ -4158,7 +4183,7 @@ async function handleSend(req, res) {
         text,
         cwd: expectedNewThreadCwd,
         excludeThreadId: previousThreadId,
-      });
+      }, CODEX_SEND_CONFIRM_TIMEOUT_MS);
       if (newSessionFile) {
         confirmedSendFile = newSessionFile;
         watch = {
@@ -4170,7 +4195,7 @@ async function handleSend(req, res) {
         };
       }
     } else if (target === 'codex' && text.trim() && watchFile) {
-      confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
+      confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text }, CODEX_SEND_CONFIRM_TIMEOUT_MS);
     }
     if (target === 'codex' && text.trim() && !confirmedSendFile && IS_WINDOWS) {
       const dismissedObstruction = await windowsDismissCodexBottomObstructions().catch(() => false);
@@ -4184,7 +4209,7 @@ async function handleSend(req, res) {
             text,
             cwd: expectedNewThreadCwd,
             excludeThreadId: previousThreadId,
-          });
+          }, CODEX_SEND_CONFIRM_TIMEOUT_MS);
           if (newSessionFile) {
             confirmedSendFile = newSessionFile;
             watch = {
@@ -4196,7 +4221,7 @@ async function handleSend(req, res) {
             };
           }
         } else if (watchFile) {
-          confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
+          confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text }, CODEX_SEND_CONFIRM_TIMEOUT_MS);
         }
       }
     }
@@ -4214,7 +4239,7 @@ async function handleSend(req, res) {
           text,
           cwd: expectedNewThreadCwd,
           excludeThreadId: previousThreadId,
-        });
+        }, CODEX_SEND_CONFIRM_TIMEOUT_MS);
         if (newSessionFile) {
           confirmedSendFile = newSessionFile;
           watch = {
@@ -4226,7 +4251,7 @@ async function handleSend(req, res) {
           };
         }
       } else if (watchFile) {
-        confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text });
+        confirmedSendFile = await waitForCodexUserMessageInFile(watchFile, { sinceMs: watchSinceMs, text }, CODEX_SEND_CONFIRM_TIMEOUT_MS);
       }
     }
     if (target === 'codex' && text.trim() && !confirmedSendFile) {
