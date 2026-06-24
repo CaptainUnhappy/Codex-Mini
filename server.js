@@ -2510,7 +2510,8 @@ function handleSendStatus(req, res) {
     found: true,
     progress: entry.progress || null,
     duplicate: Boolean(entry.result),
-    done: Boolean(entry.result),
+    failed: Boolean(entry.failed),
+    done: Boolean(entry.result || entry.failed),
     watch: entry.watch || null,
   });
 }
@@ -3776,6 +3777,28 @@ async function pasteAndEnter(text, target = 'frontmost', attachments = [], threa
   await pressEnter();
 }
 
+async function pasteAndEnterWithCodexStartupRetry(text, target, attachments, threadId, options = {}, clientRequestId = '') {
+  try {
+    await pasteAndEnter(text, target, attachments, threadId, options);
+    return;
+  } catch (error) {
+    if (!(target === 'codex' && IS_WINDOWS && text && !attachments.length && isWindowsCodexStartupFocusError(error))) {
+      throw error;
+    }
+    setSendProgress(clientRequestId, 'waitingCodex', 'Codex 已启动，继续等待窗口和输入框加载');
+    await delay(1200);
+    await windowsActivateCodexWindow({ startIfNeeded: true });
+    setSendProgress(clientRequestId, 'waitingComposer');
+    await delay(800);
+    setSendProgress(clientRequestId, 'retryingFocus');
+    await pasteAndEnter(text, target, attachments, threadId, {
+      ...options,
+      assumeThreadSynced: false,
+      skipComposerClick: false,
+    });
+  }
+}
+
 function modelSwitchTargetForCurrent(current = {}, requestedTarget = '') {
   const explicit = String(requestedTarget || '').trim();
   const catalogTarget = findModelOption(explicit);
@@ -4126,7 +4149,7 @@ async function handleSend(req, res) {
         setSendProgress(clientRequestId, 'activatingCodex');
       }
     }
-    await pasteAndEnter(text, target, attachments, selectedThreadId, { assumeThreadSynced, skipComposerClick: directPasteWithoutClick });
+    await pasteAndEnterWithCodexStartupRetry(text, target, attachments, selectedThreadId, { assumeThreadSynced, skipComposerClick: directPasteWithoutClick }, clientRequestId);
     setSendProgress(clientRequestId, 'confirming');
     let confirmedSendFile = null;
     if (expectNewThread && watch) {
@@ -4232,8 +4255,22 @@ async function handleSend(req, res) {
     }
     return json(res, 200, result);
   } catch (error) {
-    setSendProgress(clientRequestId, 'failed', error && error.message || '');
-    if (clientRequestId) recentSendRequests.delete(clientRequestId);
+    const failureProgress = setSendProgress(clientRequestId, 'failed', error && error.message || '');
+    if (clientRequestId) {
+      const existing = recentSendRequests.get(clientRequestId) || { createdAt: Date.now() };
+      recentSendRequests.set(clientRequestId, {
+        ...existing,
+        createdAt: existing.createdAt || Date.now(),
+        sentAt: existing.sentAt || new Date().toISOString(),
+        progress: failureProgress || existing.progress || null,
+        failed: true,
+        error: {
+          message: error && error.message || '',
+          detail: automationErrorText(error),
+          code: error && error.code || '',
+        },
+      });
+    }
     if (error && error.code === 'CODEX_SEND_NOT_CONFIRMED') {
       return json(res, error.status || 502, {
         ok: false,
@@ -4278,6 +4315,16 @@ function serveStatic(req, res) {
     res.writeHead(200, headers);
     res.end(req.method === 'HEAD' ? undefined : data);
   });
+}
+
+function automationErrorText(error) {
+  return String(error && (error.stderr || error.message) || '');
+}
+
+function isWindowsCodexStartupFocusError(error) {
+  if (!IS_WINDOWS) return false;
+  const raw = automationErrorText(error);
+  return /Codex window handle not found|Codex window could not be activated|Codex composer was not ready after startup|Could not read Codex window bounds|CODEX_FOCUS_FAILED/i.test(raw);
 }
 
 function stripStaticBasePath(pathname) {

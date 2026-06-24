@@ -5003,6 +5003,9 @@
             lastPhase = phase;
             lastMessage = message;
             setNotice(message, options.type || 'ok');
+            if (activeAssistant && activeAssistant.article?.classList.contains('pending')) {
+              setMarkdown(activeAssistant.bubble, message);
+            }
           }
           if (data.done) {
             stopped = true;
@@ -5102,7 +5105,12 @@
           retryProbeTimeoutMs: 900,
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) throw new Error(data.message || '发送失败');
+        if (!res.ok || !data.ok) {
+          const error = new Error(data.message || '发送失败');
+          error.code = data.code || '';
+          error.detail = data.detail || '';
+          throw error;
+        }
         if (queueBehindActiveRun) updateQueuedSend(queuedSendId, 'queued');
         setNotice(options.sentNotice || (queueBehindActiveRun ? '已发送，Codex 会排在当前回复后继续处理' : '已发送'), 'ok');
         serializeMessages();
@@ -5113,7 +5121,9 @@
           messageEl('assistant', error.message || '发送失败', { label: 'Codex mini' });
         } else if (activeAssistant) {
           activeAssistant.article.classList.remove('pending');
-          setMarkdown(activeAssistant.bubble, error.message || '发送失败');
+          const detail = String(error.detail || '').trim();
+          const shortDetail = detail ? detail.split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 2).join('\n') : '';
+          setMarkdown(activeAssistant.bubble, shortDetail ? `${error.message || '发送失败'}\n\n诊断：${shortDetail}` : (error.message || '发送失败'));
           activeAssistant = null;
           stopPolling();
         }
