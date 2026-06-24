@@ -7,6 +7,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 const { WebSocketServer } = require('ws');
+const jsQR = require('jsqr');
+const { readBarcodes } = require('zxing-wasm/reader');
 const { hmac, hashPassphrase, timingSafeEqualString, verifyPassphrase } = require('./lib/crypto');
 
 const PORT = Number(process.env.PORT || process.env.CODEX_MINI_RELAY_PORT || 8788);
@@ -18,6 +20,9 @@ const ADMIN_PASSWORD_HASH = process.env.CODEX_MINI_RELAY_ADMIN_PASSWORD_HASH || 
 const ADMIN_SESSION_SECRET = process.env.CODEX_MINI_RELAY_ADMIN_SESSION_SECRET || process.env.ADMIN_SESSION_SECRET || ADMIN_TOKEN || ADMIN_PASSWORD_HASH || ADMIN_PASSWORD || crypto.randomBytes(32).toString('base64url');
 const REGISTRATION_KEY = process.env.CODEX_MINI_RELAY_REGISTRATION_KEY || process.env.RELAY_REGISTRATION_KEY || '';
 const MAX_BODY_BYTES = Number(process.env.CODEX_MINI_RELAY_MAX_BODY_BYTES || 32 * 1024 * 1024);
+const QR_LOGIN_MAX_BYTES = Number(process.env.CODEX_MINI_QR_LOGIN_MAX_BYTES || 8 * 1024 * 1024);
+const QR_DECODE_MAX_PIXELS = Number(process.env.CODEX_MINI_QR_DECODE_MAX_PIXELS || 64 * 1024 * 1024);
+const QR_ZXING_MAX_SIDE = Number(process.env.CODEX_MINI_QR_ZXING_MAX_SIDE || 3200);
 const REQUEST_TIMEOUT_MS = Number(process.env.CODEX_MINI_RELAY_TIMEOUT_MS || 70 * 1000);
 const MAX_DEVICE_CONCURRENCY = Number(process.env.CODEX_MINI_RELAY_MAX_CONCURRENCY || 8);
 const MAX_DEVICE_REQUESTS_PER_MINUTE = Number(process.env.CODEX_MINI_RELAY_MAX_REQUESTS_PER_MINUTE || 120);
@@ -50,6 +55,7 @@ const tunnels = new Map();
 const loginFailuresByIp = new Map();
 let globalLoginFailures = { windowStart: 0, count: 0, blockedUntil: 0 };
 const deviceRateState = new Map();
+let sharpModule = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -226,6 +232,20 @@ function findDeviceByPassphrase(passphrase, options = {}) {
   return approved || matches[0] || null;
 }
 
+function getSharp() {
+  if (sharpModule) return sharpModule;
+  try {
+    sharpModule = require('sharp');
+    return sharpModule;
+  } catch (error) {
+    const wrapped = new Error('服务器缺少图片解码组件，请更新 relay 依赖后重试。');
+    wrapped.status = 503;
+    wrapped.code = 'QR_DECODER_UNAVAILABLE';
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+
 function makeSessionCookie(device) {
   const payload = {
     deviceId: device.deviceId,
@@ -333,6 +353,7 @@ function html(res, status, body, headers = {}) {
     ...headers,
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-store',
+    'permissions-policy': 'camera=(self)',
     'content-length': data.length,
   });
   res.end(data);
@@ -412,6 +433,170 @@ function readBody(req, maxBytes = MAX_BODY_BYTES) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+
+function keyFromQrValue(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw, 'https://codex-mini.local/');
+    const hashKey = new URLSearchParams(url.hash.replace(/^#/, '')).get('k');
+    if (hashKey) return hashKey.trim();
+  } catch {}
+  const match = raw.match(/(?:^|[#&])k=([^&]+)/);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1].replace(/\+/g, '%20')).trim();
+    } catch {
+      return match[1].trim();
+    }
+  }
+  if (/^[A-Za-z0-9_-]{8,160}$/.test(raw)) return raw;
+  return '';
+}
+
+function qrCropCandidates(width, height) {
+  const candidates = [{ left: 0, top: 0, width, height }];
+  const square = Math.min(width, height);
+  const centerX = width / 2;
+  const centerY = height / 2;
+  for (const ratio of [1, 0.82, 0.64, 0.48]) {
+    const size = Math.max(1, Math.round(square * ratio));
+    candidates.push({
+      left: Math.max(0, Math.round(centerX - size / 2)),
+      top: Math.max(0, Math.round(centerY - size / 2)),
+      width: size,
+      height: size,
+    });
+  }
+  const tileWidth = Math.max(1, Math.round(width * 0.62));
+  const tileHeight = Math.max(1, Math.round(height * 0.62));
+  for (const left of [0, width - tileWidth]) {
+    for (const top of [0, height - tileHeight]) {
+      candidates.push({
+        left: Math.max(0, left),
+        top: Math.max(0, top),
+        width: tileWidth,
+        height: tileHeight,
+      });
+    }
+  }
+  return candidates.filter((candidate, index, list) => {
+    if (candidate.left + candidate.width > width || candidate.top + candidate.height > height) return false;
+    return list.findIndex(item =>
+      item.left === candidate.left &&
+      item.top === candidate.top &&
+      item.width === candidate.width &&
+      item.height === candidate.height
+    ) === index;
+  });
+}
+
+function clampQrCrop(crop, imageWidth, imageHeight) {
+  const left = Math.max(0, Math.min(Math.floor(Number(crop.left || 0)), imageWidth - 1));
+  const top = Math.max(0, Math.min(Math.floor(Number(crop.top || 0)), imageHeight - 1));
+  const width = Math.max(1, Math.min(Math.floor(Number(crop.width || 0)), imageWidth - left));
+  const height = Math.max(1, Math.min(Math.floor(Number(crop.height || 0)), imageHeight - top));
+  if (left < 0 || top < 0 || width < 1 || height < 1) return null;
+  if (left + width > imageWidth || top + height > imageHeight) return null;
+  return { left, top, width, height };
+}
+
+function qrDecodePlans(width, height) {
+  const crops = qrCropCandidates(width, height);
+  const plans = [];
+  for (const crop of crops) {
+    for (const rotation of [0, 90, 180, 270]) {
+      plans.push({
+        crop,
+        rotation,
+        maxSide: crop.width === width && crop.height === height ? 2400 : 1800,
+      });
+    }
+  }
+  return plans;
+}
+
+async function decodeQrWithZxing(imageBuffer) {
+  const results = await readBarcodes(new Uint8Array(imageBuffer), {
+    formats: ['QRCode'],
+    tryHarder: true,
+    tryRotate: true,
+    tryInvert: true,
+    tryDownscale: true,
+    tryDenoise: true,
+    maxNumberOfSymbols: 1,
+    textMode: 'Plain',
+  });
+  for (const result of results || []) {
+    if (!result || result.isValid === false) continue;
+    const key = keyFromQrValue(result.text || '');
+    if (key) return { key, raw: result.text || '', engine: 'zxing' };
+  }
+  return null;
+}
+
+async function decodeQrWithJsQrFallback(normalized, width, height) {
+  const sharp = getSharp();
+  for (const plan of qrDecodePlans(width, height)) {
+    const crop = clampQrCrop(plan.crop, width, height);
+    if (!crop) continue;
+    try {
+      const image = sharp(normalized, { limitInputPixels: QR_DECODE_MAX_PIXELS })
+        .extract(crop)
+        .rotate(plan.rotation)
+        .resize({
+          width: plan.maxSide,
+          height: plan.maxSide,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .ensureAlpha()
+        .raw();
+      const { data, info } = await image.toBuffer({ resolveWithObject: true });
+      const pixels = new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength);
+      const code = jsQR(pixels, info.width, info.height, { inversionAttempts: 'attemptBoth' });
+      if (!code || !code.data) continue;
+      const key = keyFromQrValue(code.data);
+      if (key) return { key, raw: code.data, engine: 'jsqr' };
+    } catch (error) {
+      if (/extract_area|bad extract area|extract/i.test(String(error && error.message || ''))) continue;
+      throw error;
+    }
+  }
+  return null;
+}
+
+async function decodeQrImageBuffer(buffer) {
+  const sharp = getSharp();
+  const normalized = await sharp(buffer, {
+    failOn: 'none',
+    limitInputPixels: QR_DECODE_MAX_PIXELS,
+  })
+    .rotate()
+    .resize({
+      width: QR_ZXING_MAX_SIDE,
+      height: QR_ZXING_MAX_SIDE,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .png()
+    .toBuffer();
+
+  const zxingResult = await decodeQrWithZxing(normalized);
+  if (zxingResult) return zxingResult;
+
+  const metadata = await sharp(normalized, { limitInputPixels: QR_DECODE_MAX_PIXELS }).metadata();
+  const width = Number(metadata.width || 0);
+  const height = Number(metadata.height || 0);
+  if (!width || !height) {
+    const error = new Error('图片格式无法识别。');
+    error.status = 422;
+    error.code = 'IMAGE_UNREADABLE';
+    throw error;
+  }
+
+  return decodeQrWithJsQrFallback(normalized, width, height);
 }
 
 function publicBasePath(pathname) {
@@ -527,6 +712,56 @@ function loginPage(message = '', assetBasePath = '') {
       message.textContent = text || '';
       message.className = type ? 'message is-' + type : 'message';
     }
+    function cameraCapabilityReport() {
+      return {
+        secureContext: Boolean(window.isSecureContext),
+        protocol: location.protocol,
+        hasMediaDevices: Boolean(navigator.mediaDevices),
+        hasModernGetUserMedia: Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+        hasLegacyGetUserMedia: Boolean(legacyGetUserMedia()),
+        userAgent: navigator.userAgent || '',
+      };
+    }
+    function cameraErrorName(error) {
+      return String(error && error.name || error && error.code || 'CameraError');
+    }
+    function cameraErrorDetail(error) {
+      const parts = [cameraErrorName(error)];
+      if (error && error.constraint) parts.push('constraint=' + error.constraint);
+      if (error && error.message) parts.push(String(error.message));
+      return parts.filter(Boolean).join(' / ');
+    }
+    function cameraUnavailableMessage(error) {
+      const report = cameraCapabilityReport();
+      const name = cameraErrorName(error);
+      if (!report.secureContext) return '实时摄像头需要 HTTPS 安全页面；当前页面不能调用实时相机，已切换为拍照扫码。';
+      if (!report.hasModernGetUserMedia && !report.hasLegacyGetUserMedia) {
+        return '当前 Android 浏览器没有暴露实时摄像头 API，已切换为拍照扫码。建议用 Chrome/Edge 打开同一个 HTTPS 链接。';
+      }
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') return '摄像头权限被拒绝，已切换为拍照扫码。请在浏览器站点权限里允许相机后重试。';
+      if (name === 'NotFoundError' || name === 'DevicesNotFoundError') return '没有找到可用摄像头，已切换为拍照扫码。';
+      if (name === 'NotReadableError' || name === 'TrackStartError') return '摄像头被系统或其他应用占用，已切换为拍照扫码。';
+      if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') return '浏览器不支持请求的摄像头参数，已切换为拍照扫码。';
+      if (name === 'NotSupportedError') return '当前 Android 浏览器不支持网页实时视频流，已切换为拍照扫码。建议用 Chrome/Edge 打开同一个 HTTPS 链接。';
+      if (name === 'AbortError') return '浏览器中断了摄像头启动，已切换为拍照扫码。';
+      return '无法打开实时摄像头（' + cameraErrorDetail(error) + '），已切换为拍照扫码。';
+    }
+    function reportCameraDiagnostic(stage, error, extra) {
+      try {
+        const payload = Object.assign(cameraCapabilityReport(), extra || {}, {
+          stage,
+          errorName: error ? cameraErrorName(error) : '',
+          errorMessage: error && error.message ? String(error.message).slice(0, 240) : '',
+          errorConstraint: error && error.constraint ? String(error.constraint) : '',
+        });
+        fetch('camera-diagnostic', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(() => {});
+      } catch {}
+    }
     async function getBarcodeDetector() {
       if (!('BarcodeDetector' in window)) {
         return null;
@@ -566,8 +801,8 @@ function loginPage(message = '', assetBasePath = '') {
         return false;
       }
       input.value = key;
-      input.focus();
-      setMessage('已填入设备密钥，请点击登录。', 'ok');
+      setMessage('已识别设备密钥，正在登录...', 'ok');
+      login(key);
       return true;
     }
     function decodeQrFromCanvas(canvas) {
@@ -703,35 +938,31 @@ function loginPage(message = '', assetBasePath = '') {
         throw error;
       }
     }
-    async function decodeImageFile(file) {
+    async function loginWithQrFile(file) {
       if (!file) return;
-      setMessage('正在识别相册二维码...', 'ok');
-      const image = new Image();
-      image.decoding = 'async';
-      const objectUrl = URL.createObjectURL(file);
-      let bitmap = null;
+      setMessage('正在上传二维码并登录...', 'ok');
+      setLoginBusy(true, '正在登录...');
       try {
-        if (window.createImageBitmap) {
-          try {
-            bitmap = await withTimeout(createImageBitmap(file, { imageOrientation: 'from-image' }), 3500, 'bitmap timeout');
-            const bitmapRaw = await detectQrFromSource(bitmap);
-            if (fillScannedKey(bitmapRaw)) return;
-          } catch {}
+        const response = await fetch('qr-login', {
+          method: 'POST',
+          headers: { 'content-type': file.type || 'application/octet-stream' },
+          body: file,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          const error = new Error(data.message || '二维码登录失败');
+          error.code = data.code || '';
+          throw error;
         }
-        image.src = objectUrl;
-        const loaded = imageLoadPromise(image);
-        if (image.decode) {
-          await withTimeout(image.decode().catch(() => loaded), 8000, 'image decode timeout');
-        } else {
-          await withTimeout(loaded, 8000, 'image load timeout');
-        }
-        const raw = await detectQrFromSource(image);
-        if (!fillScannedKey(raw)) setMessage('没有识别到二维码，请换一张更清晰的图片。', '');
-      } finally {
-        if (bitmap && bitmap.close) bitmap.close();
-        URL.revokeObjectURL(objectUrl);
-        qrFile.value = '';
+        cleanHash();
+        location.replace('./');
+      } catch (error) {
+        setMessage(error.message || '二维码登录失败', error.code === 'DEVICE_PENDING_AUTHORIZATION' ? 'pending' : '');
+        setLoginBusy(false);
       }
+    }
+    async function decodeImageFile(file) {
+      return loginWithQrFile(file);
     }
     function stopCameraScan() {
       window.clearTimeout(scanTimer);
@@ -749,8 +980,9 @@ function loginPage(message = '', assetBasePath = '') {
       try {
         if (scannerVideo.readyState >= 2) {
           const raw = await detectQrFromSource(scannerVideo);
-          if (raw && fillScannedKey(raw)) {
+          if (raw) {
             stopCameraScan();
+            if (fillScannedKey(raw)) return;
             return;
           }
         }
@@ -768,35 +1000,77 @@ function loginPage(message = '', assetBasePath = '') {
       return Boolean((navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || legacyGetUserMedia());
     }
     function requestCameraStream(constraints) {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        return navigator.mediaDevices.getUserMedia(constraints);
-      }
       const legacy = legacyGetUserMedia();
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        return navigator.mediaDevices.getUserMedia(constraints).catch(modernError => {
+          if (!legacy) throw modernError;
+          reportCameraDiagnostic('getUserMedia-modern-failed-trying-legacy', modernError, { constraints: JSON.stringify(constraints) });
+          return new Promise((resolve, reject) => {
+            legacy.call(navigator, constraints, resolve, legacyError => {
+              legacyError = legacyError || modernError;
+              if (!legacyError.name && modernError && modernError.name) {
+                try { legacyError.name = modernError.name; } catch {}
+              }
+              reject(legacyError);
+            });
+          });
+        });
+      }
       if (!legacy) return Promise.reject(new Error('camera api unavailable'));
       return new Promise((resolve, reject) => {
         legacy.call(navigator, constraints, resolve, reject);
       });
     }
+    function waitForVideoReady(video, ms) {
+      if (video.readyState >= 2 && video.videoWidth && video.videoHeight) return Promise.resolve();
+      return withTimeout(new Promise((resolve, reject) => {
+        const cleanup = () => {
+          video.removeEventListener('loadedmetadata', onReady);
+          video.removeEventListener('loadeddata', onReady);
+          video.removeEventListener('canplay', onReady);
+          video.removeEventListener('error', onError);
+        };
+        const onReady = () => {
+          if (video.videoWidth && video.videoHeight) {
+            cleanup();
+            resolve();
+          }
+        };
+        const onError = () => {
+          cleanup();
+          reject(new Error('video element failed'));
+        };
+        video.addEventListener('loadedmetadata', onReady);
+        video.addEventListener('loadeddata', onReady);
+        video.addEventListener('canplay', onReady);
+        video.addEventListener('error', onError);
+      }), ms || 3000, 'video metadata timeout');
+    }
     async function openCameraStream() {
       const attempts = [
-        { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
-        { video: { facingMode: 'environment' }, audio: false },
+        { video: { facingMode: { ideal: 'environment' } }, audio: false },
+        { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
         { video: true, audio: false },
       ];
       let lastError = null;
-      for (const constraints of attempts) {
+      for (let index = 0; index < attempts.length; index += 1) {
+        const constraints = attempts[index];
         try {
           return await requestCameraStream(constraints);
         } catch (error) {
           lastError = error;
+          reportCameraDiagnostic('getUserMedia-attempt-failed', error, { attempt: index + 1, constraints: JSON.stringify(constraints) });
         }
       }
       throw lastError || new Error('camera unavailable');
     }
     async function startCameraScan() {
       try {
+        reportCameraDiagnostic('camera-click');
         if (!canRequestCamera()) {
-          setMessage('当前浏览器不支持实时摄像头，已切换为拍照扫码。', 'ok');
+          const error = new Error('camera api unavailable');
+          reportCameraDiagnostic('camera-api-unavailable', error);
+          setMessage(cameraUnavailableMessage(error), '');
           cameraFile.click();
           return;
         }
@@ -805,21 +1079,32 @@ function loginPage(message = '', assetBasePath = '') {
         cameraStream = await openCameraStream();
         scannerVideo.muted = true;
         scannerVideo.playsInline = true;
+        scannerVideo.setAttribute('playsinline', '');
+        scannerVideo.setAttribute('autoplay', '');
+        scannerVideo.setAttribute('muted', '');
         scannerVideo.srcObject = cameraStream;
         scannerPanel.hidden = false;
+        await waitForVideoReady(scannerVideo, 3000);
         await scannerVideo.play();
         setMessage('请把二维码放入取景框。', 'ok');
+        reportCameraDiagnostic('camera-open-ok', null, { videoWidth: scannerVideo.videoWidth, videoHeight: scannerVideo.videoHeight });
         scanVideoFrame();
       } catch (error) {
+        reportCameraDiagnostic('camera-open-failed', error);
         stopCameraScan();
-        setMessage('无法打开实时摄像头，已切换为拍照扫码。', '');
+        setMessage(cameraUnavailableMessage(error), '');
         cameraFile.click();
       }
     }
+    function setLoginBusy(isBusy, label) {
+      submit.disabled = isBusy;
+      cameraScan.disabled = isBusy;
+      albumScan.disabled = isBusy;
+      submit.textContent = isBusy ? (label || '正在登录...') : '登录';
+    }
     async function login(passphrase) {
       setMessage('', '');
-      submit.disabled = true;
-      submit.textContent = '正在登录...';
+      setLoginBusy(true, '正在登录...');
       try {
         const response = await fetch('login', {
           method: 'POST',
@@ -836,8 +1121,7 @@ function loginPage(message = '', assetBasePath = '') {
         location.replace('./');
       } catch (error) {
         setMessage(error.message || '登录失败', error.code === 'DEVICE_PENDING_AUTHORIZATION' ? 'pending' : '');
-        submit.disabled = false;
-        submit.textContent = '登录';
+        setLoginBusy(false);
       }
     }
     form.addEventListener('submit', event => {
@@ -851,7 +1135,7 @@ function loginPage(message = '', assetBasePath = '') {
     cameraScan.addEventListener('click', startCameraScan);
     albumScan.addEventListener('click', () => qrFile.click());
     cameraFile.addEventListener('change', () => decodeImageFile(cameraFile.files && cameraFile.files[0]).finally(() => { cameraFile.value = ''; }).catch(error => setMessage(error.message || '拍照扫码失败。', '')));
-    qrFile.addEventListener('change', () => decodeImageFile(qrFile.files && qrFile.files[0]).catch(error => setMessage(error.message || '相册扫码失败。', '')));
+    qrFile.addEventListener('change', () => decodeImageFile(qrFile.files && qrFile.files[0]).finally(() => { qrFile.value = ''; }).catch(error => setMessage(error.message || '相册扫码失败。', '')));
     closeScanner.addEventListener('click', stopCameraScan);
     window.addEventListener('pagehide', stopCameraScan);
   </script>
@@ -863,6 +1147,38 @@ function handleLoginPage(req, res, message = '') {
   if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 401, { ok: false, code: 'UNAUTHORIZED', message: '请先登录。' });
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   html(res, 200, req.method === 'HEAD' ? '' : loginPage(message, publicBasePath(url.pathname)));
+}
+
+function finishPassphraseLogin(req, res, passphrase, source = 'login') {
+  passphrase = String(passphrase || '').trim();
+  if (passphrase.length < LOGIN_MIN_PASSPHRASE_LENGTH) {
+    recordLoginFailure(req);
+    return json(res, 401, { ok: false, code: 'BAD_PASSPHRASE', message: '设备密钥不正确。' });
+  }
+
+  const device = findDeviceByPassphrase(passphrase, { includePending: true });
+  if (!device) {
+    recordLoginFailure(req);
+    logMeta('login_failed', { source, ip: clientIp(req) });
+    return json(res, 401, { ok: false, code: 'BAD_PASSPHRASE', message: '设备密钥不正确。' });
+  }
+
+  if (device.approved === false) {
+    logMeta('login_pending_authorization', { source, deviceId: device.deviceId, ip: clientIp(req) });
+    return json(res, 403, { ok: false, code: 'DEVICE_PENDING_AUTHORIZATION', message: '等待授权' });
+  }
+
+  recordLoginSuccess(req);
+  const online = isDeviceOnline(device.deviceId);
+  logMeta('login_ok', { source, deviceId: device.deviceId, online });
+  return json(res, 200, {
+    ok: true,
+    deviceId: device.deviceId,
+    name: device.name,
+    online,
+  }, {
+    'set-cookie': sessionCookieHeader(device),
+  });
 }
 
 async function handleLogin(req, res) {
@@ -878,35 +1194,77 @@ async function handleLogin(req, res) {
     return json(res, 400, { ok: false, code: 'BAD_REQUEST', message: '请求格式不正确。' });
   }
 
-  const passphrase = String(payload.passphrase || '').trim();
-  if (passphrase.length < LOGIN_MIN_PASSPHRASE_LENGTH) {
-    recordLoginFailure(req);
-    return json(res, 401, { ok: false, code: 'BAD_PASSPHRASE', message: '设备密钥不正确。' });
-  }
+  return finishPassphraseLogin(req, res, payload.passphrase, 'login');
+}
 
-  const device = findDeviceByPassphrase(passphrase, { includePending: true });
-  if (!device) {
-    recordLoginFailure(req);
-    logMeta('login_failed', { ip: clientIp(req) });
-    return json(res, 401, { ok: false, code: 'BAD_PASSPHRASE', message: '设备密钥不正确。' });
+async function handleCameraDiagnostic(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed' });
+  let payload = {};
+  try {
+    const body = await readBody(req, 8 * 1024);
+    payload = JSON.parse(body.toString('utf8') || '{}');
+  } catch {
+    payload = {};
   }
-
-  if (device.approved === false) {
-    logMeta('login_pending_authorization', { deviceId: device.deviceId, ip: clientIp(req) });
-    return json(res, 403, { ok: false, code: 'DEVICE_PENDING_AUTHORIZATION', message: '等待授权' });
-  }
-
-  recordLoginSuccess(req);
-  const online = isDeviceOnline(device.deviceId);
-  logMeta('login_ok', { deviceId: device.deviceId, online });
-  return json(res, 200, {
-    ok: true,
-    deviceId: device.deviceId,
-    name: device.name,
-    online,
-  }, {
-    'set-cookie': sessionCookieHeader(device),
+  const pick = key => String(payload[key] || '').slice(0, 240);
+  logMeta('camera_diagnostic', {
+    ip: clientIp(req),
+    stage: pick('stage'),
+    secureContext: Boolean(payload.secureContext),
+    protocol: pick('protocol'),
+    hasMediaDevices: Boolean(payload.hasMediaDevices),
+    hasModernGetUserMedia: Boolean(payload.hasModernGetUserMedia),
+    hasLegacyGetUserMedia: Boolean(payload.hasLegacyGetUserMedia),
+    errorName: pick('errorName'),
+    errorMessage: pick('errorMessage'),
+    errorConstraint: pick('errorConstraint'),
+    attempt: Number(payload.attempt || 0) || undefined,
+    videoWidth: Number(payload.videoWidth || 0) || undefined,
+    videoHeight: Number(payload.videoHeight || 0) || undefined,
+    userAgent: pick('userAgent'),
   });
+  return json(res, 200, { ok: true });
+}
+
+async function handleQrLogin(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed' });
+  const blockedFor = loginBlocked(req);
+  if (blockedFor) return json(res, 429, { ok: false, code: 'LOGIN_RATE_LIMITED', message: `登录尝试过多，请 ${blockedFor} 秒后再试。` });
+
+  const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (contentType && !contentType.startsWith('image/') && contentType !== 'application/octet-stream') {
+    return json(res, 415, { ok: false, code: 'UNSUPPORTED_MEDIA_TYPE', message: '请选择二维码图片。' });
+  }
+
+  let body = null;
+  try {
+    body = await readBody(req, QR_LOGIN_MAX_BYTES);
+  } catch (error) {
+    return json(res, error.status || 400, {
+      ok: false,
+      code: error.code || 'BAD_REQUEST',
+      message: error.code === 'BODY_TOO_LARGE' ? '二维码图片太大，请选择 8MB 以内的图片。' : '图片上传失败。',
+    });
+  }
+  if (!body || body.length === 0) {
+    return json(res, 400, { ok: false, code: 'EMPTY_IMAGE', message: '请选择二维码图片。' });
+  }
+
+  let decoded = null;
+  try {
+    decoded = await decodeQrImageBuffer(body);
+  } catch (error) {
+    logMeta('qr_login_decode_failed', { code: error.code || 'QR_DECODE_FAILED', ip: clientIp(req) });
+    return json(res, error.status || 422, {
+      ok: false,
+      code: error.code || 'QR_DECODE_FAILED',
+      message: error.message || '二维码图片识别失败。',
+    });
+  }
+  if (!decoded || !decoded.key) {
+    return json(res, 422, { ok: false, code: 'QR_NOT_FOUND', message: '没有识别到可登录的二维码。' });
+  }
+  return finishPassphraseLogin(req, res, decoded.key, `qr_login_${decoded.engine || 'unknown'}`);
 }
 
 function handleLogout(req, res) {
@@ -1460,6 +1818,8 @@ const server = http.createServer(async (req, res) => {
   if (routePath === '/health') return json(res, 200, { ok: true, service: 'codex-mini-relay', now: new Date().toISOString() });
   if (routePath === '/device/register') return handleDeviceRegister(req, res);
   if (routePath === '/login') return handleLogin(req, res);
+  if (routePath === '/camera-diagnostic') return handleCameraDiagnostic(req, res);
+  if (routePath === '/qr-login') return handleQrLogin(req, res);
   if (routePath === '/logout') return handleLogout(req, res);
   if (routePath === '/admin' || routePath === '/admin/') return handleAdminHome(req, res);
   if (routePath === '/admin/login') return handleAdminLogin(req, res);
