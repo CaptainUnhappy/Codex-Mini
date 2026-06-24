@@ -269,6 +269,22 @@
       -webkit-backdrop-filter: blur(18px);
     }
     .model-menu-card.is-open { display: grid; }
+    .model-menu-card.has-reasoning {
+      min-width: min(292px, calc(100vw - 20px));
+    }
+    .model-menu-label {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 820;
+      line-height: 1;
+      padding: 2px 4px 0;
+    }
+    .model-menu-card.has-reasoning .reasoning-menu-item {
+      width: auto;
+      min-width: 0;
+      justify-content: center;
+    }
     .model-menu-item {
       min-width: 0;
       height: 34px;
@@ -1570,7 +1586,10 @@
       .route-badge svg { width: 14px; height: 14px; transform: translateY(.2px); }
       .reasoning-badge,
       .model-badge { min-width: 38px; padding-inline: 8px; font-size: 11px; }
-      .reasoning-badge { min-width: 30px; font-size: 10px; }
+      .reasoning-badge { display: none; }
+      .model-menu-card.has-reasoning {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
       .context-status.mode-ring { width: calc(var(--top-control-size) - 2.5px); min-width: calc(var(--top-control-size) - 2.5px); height: calc(var(--top-control-size) - 2.5px); }
       .context-status .context-ring { width: calc(var(--top-control-size) - 2.5px); height: calc(var(--top-control-size) - 2.5px); }
       #route-text { line-height: 14px; transform: translateY(.1px); }
@@ -2298,9 +2317,17 @@
       const label = String(mode?.label || mode?.displayName || '').trim();
       return REASONING_MODE_OPTIONS.find(item => item.label === label)?.key || '';
     }
-    function renderReasoningMenu() {
+    function useCombinedModelMenu() {
+      return window.matchMedia('(max-width: 700px)').matches;
+    }
+    function appendModelMenuLabel(container, text) {
+      const label = document.createElement('div');
+      label.className = 'model-menu-label';
+      label.textContent = text;
+      container.appendChild(label);
+    }
+    function appendReasoningMenuItems(container, closeMenu) {
       const currentKey = currentReasoningKey();
-      reasoningMenuCard.textContent = '';
       for (const item of REASONING_MODE_OPTIONS) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -2312,15 +2339,19 @@
         wireInstantActionButton(button, () => {
           if (switchingReasoningMode) return;
           if (item.key === currentKey) {
-            closeReasoningMenu();
+            closeMenu();
             setNotice(`当前已是${item.displayName}推理模式`, 'ok');
             return;
           }
-          closeReasoningMenu();
+          closeMenu();
           switchReasoningMode(item.key);
         });
-        reasoningMenuCard.appendChild(button);
+        container.appendChild(button);
       }
+    }
+    function renderReasoningMenu() {
+      reasoningMenuCard.textContent = '';
+      appendReasoningMenuItems(reasoningMenuCard, closeReasoningMenu);
     }
     function renderReasoningBadge(mode = currentReasoningMode) {
       currentReasoningMode = mode || null;
@@ -2333,6 +2364,7 @@
       reasoningBadge.setAttribute('aria-label', `当前推理模式：${display}。点击打开低、中、高、超高选择菜单。`);
       reasoningBadge.disabled = switchingReasoningMode;
       if (reasoningMenuCard.classList.contains('is-open')) renderReasoningMenu();
+      if (modelMenuCard.classList.contains('is-open') && useCombinedModelMenu()) renderModelMenu();
     }
     function updateReasoningFromStatus(data) {
       const mode = bestReasoningMode(data?.reasoningMode || null, data?.threadId || selectedThreadId);
@@ -2416,7 +2448,14 @@
     }
     function renderModelMenu() {
       const currentKey = currentModelMenuKey();
+      const combined = useCombinedModelMenu();
       modelMenuCard.textContent = '';
+      modelMenuCard.classList.toggle('has-reasoning', combined);
+      if (combined) {
+        appendModelMenuLabel(modelMenuCard, '思考等级');
+        appendReasoningMenuItems(modelMenuCard, closeModelMenu);
+        appendModelMenuLabel(modelMenuCard, '模型');
+      }
       for (const item of modelMenuOptions) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -4722,6 +4761,10 @@
     }
 
     function openReasoningMenu(options = {}) {
+      if (useCombinedModelMenu()) {
+        openModelMenu(options);
+        return;
+      }
       threadMenu.classList.remove('is-open');
       closeThreadActionCard();
       closeContextQuickCard();
@@ -4768,7 +4811,7 @@
     }
 
     function closeModelMenu() {
-      modelMenuCard.classList.remove('is-open');
+      modelMenuCard.classList.remove('is-open', 'has-reasoning');
       modelMenuCard.style.left = '';
       modelMenuCard.style.top = '';
     }
@@ -5158,6 +5201,13 @@
     window.addEventListener('scroll', keepLayoutViewportPinned, { passive: true });
     window.addEventListener('resize', alignComposerForKeyboard);
     window.addEventListener('resize', positionThreadMenuCard);
+    window.addEventListener('resize', () => {
+      if (modelMenuCard.classList.contains('is-open')) {
+        renderModelMenu();
+        positionModelMenu(modelBadge);
+      }
+      if (reasoningMenuCard.classList.contains('is-open')) positionReasoningMenu(reasoningBadge);
+    });
     window.addEventListener('orientationchange', () => window.setTimeout(scheduleKeyboardAlignment, 250));
     window.addEventListener('orientationchange', () => window.setTimeout(positionThreadMenuCard, 250));
     if (window.visualViewport) {
