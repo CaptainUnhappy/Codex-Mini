@@ -3309,6 +3309,70 @@ Start-Sleep -Milliseconds 320
 `);
 }
 
+async function windowsClickCodexStopButton() {
+  await runWindowsPowerShell(`
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexMiniStopButtonWin32 {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int data, UIntPtr extra);
+}
+"@
+function Click-CodexMiniPoint([int]$x, [int]$y) {
+  [void][CodexMiniStopButtonWin32]::SetCursorPos($x, $y)
+  [CodexMiniStopButtonWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [CodexMiniStopButtonWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+}
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.AppActivate('Codex')
+Start-Sleep -Milliseconds 160
+$proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+  Where-Object { $_.MainWindowHandle -ne 0 } |
+  Sort-Object StartTime -Descending |
+  Select-Object -First 1
+if (-not $proc) { throw 'Codex window handle not found.' }
+$window = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
+if (-not $window) { throw 'Codex UI Automation window not found.' }
+$windowBounds = $window.Current.BoundingRectangle
+$bottomCutoff = $windowBounds.Bottom - [Math]::Max(220, [int]($windowBounds.Height * 0.28))
+$all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$button = $null
+for ($i = 0; $i -lt $all.Count; $i++) {
+  $item = $all.Item($i)
+  if ($item.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { continue }
+  if (-not $item.Current.IsEnabled -or $item.Current.IsOffscreen) { continue }
+  $rect = $item.Current.BoundingRectangle
+  if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+  if ($rect.Y -lt $bottomCutoff) { continue }
+  $name = [string]$item.Current.Name
+  $looksLikeStop = $name -match '(?i)停止|中断|取消|stop|cancel|interrupt'
+  $looksLikeBottomRightAction = $rect.X -gt ($windowBounds.Right - [Math]::Max(180, [int]($windowBounds.Width * 0.18))) -and $rect.Width -le 96 -and $rect.Height -le 96
+  if (-not ($looksLikeStop -or $looksLikeBottomRightAction)) { continue }
+  if (-not $button -or $looksLikeStop -or $rect.X -gt $button.Current.BoundingRectangle.X) { $button = $item }
+  if ($looksLikeStop) { break }
+}
+if ($button) {
+  try {
+    $pattern = $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    $pattern.Invoke()
+  } catch {
+    $rect = $button.Current.BoundingRectangle
+    Click-CodexMiniPoint ([int]($rect.X + ($rect.Width / 2))) ([int]($rect.Y + ($rect.Height / 2)))
+  }
+} else {
+  $x = [int]($windowBounds.Right - [Math]::Max(34, [Math]::Min(72, $windowBounds.Width * 0.045)))
+  $y = [int]($windowBounds.Bottom - [Math]::Max(34, [Math]::Min(78, $windowBounds.Height * 0.065)))
+  Click-CodexMiniPoint $x $y
+}
+Start-Sleep -Milliseconds 260
+`);
+}
+
 function windowsShortcutKeys(key, modifiers = []) {
   const prefix = modifiers.map(modifier => {
     const item = String(modifier || '').toLowerCase();
@@ -3904,6 +3968,22 @@ async function switchCodexReasoningMode(threadId = '', targetKey = '') {
 }
 
 async function stopCodexResponse(threadId = '') {
+  if (IS_WINDOWS) {
+    await activateCodexThread(threadId);
+    let clickError = null;
+    try {
+      await windowsClickCodexStopButton();
+    } catch (error) {
+      clickError = error;
+    }
+    try {
+      await pressCancelCodexResponse();
+    } catch (error) {
+      if (clickError) throw clickError;
+      throw error;
+    }
+    return;
+  }
   await focusTarget('codex', threadId);
   await pressCancelCodexResponse();
 }
