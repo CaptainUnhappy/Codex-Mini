@@ -13,6 +13,7 @@ const APP_NAME = process.env.CODEX_MINI_APP_NAME || 'Codex Mini';
 const IS_MAC = process.platform === 'darwin';
 const IS_WINDOWS = process.platform === 'win32';
 const WINDOWS_CODEX_APP_ID = process.env.CODEX_MINI_WINDOWS_CODEX_APP_ID || 'OpenAI.Codex_2p2nqsd0c76g0!App';
+const WINDOWS_CODEX_STARTUP_TIMEOUT_MS = Number(process.env.CODEX_MINI_WINDOWS_CODEX_STARTUP_TIMEOUT_MS || 18000);
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN = process.env.MOBILE_TYPER_TOKEN || crypto.randomBytes(12).toString('base64url');
@@ -24,6 +25,10 @@ const RELAY_PASSPHRASE = process.env.CODEX_MINI_RELAY_PASSPHRASE || '';
 const RELAY_REQUEST_TIMEOUT_MS = Number(process.env.CODEX_MINI_RELAY_REQUEST_TIMEOUT_MS || 70 * 1000);
 const RELAY_RESPONSE_MAX_BYTES = Number(process.env.CODEX_MINI_RELAY_RESPONSE_MAX_BYTES || 32 * 1024 * 1024);
 const RELAY_TERMINAL_QR = process.env.CODEX_MINI_TERMINAL_QR !== '0';
+const RELAY_HEARTBEAT_INTERVAL_MS = Number(process.env.CODEX_MINI_RELAY_HEARTBEAT_INTERVAL_MS || 15000);
+const RELAY_HEARTBEAT_TIMEOUT_MS = Number(process.env.CODEX_MINI_RELAY_HEARTBEAT_TIMEOUT_MS || 45000);
+const RELAY_REQUIRE_CODEX_DESKTOP = process.env.CODEX_MINI_RELAY_REQUIRE_CODEX_DESKTOP !== '0';
+const RELAY_CODEX_WATCH_INTERVAL_MS = Number(process.env.CODEX_MINI_RELAY_CODEX_WATCH_INTERVAL_MS || 5000);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = Number(process.env.CODEX_MINI_MAX_BODY_BYTES || 28 * 1024 * 1024);
 const MAX_TEXT_LENGTH = 8000;
@@ -2034,6 +2039,152 @@ const RELAY_HOP_BY_HOP_HEADERS = new Set([
 let relayReconnectTimer = null;
 let relayReconnectDelayMs = 1000;
 let relayApprovalNoticeShown = false;
+let relayHeartbeatTimer = null;
+let relayCodexWatchTimer = null;
+let relayCodexWatchInFlight = false;
+let relayCurrentWs = null;
+let relayPausedForCodexDesktop = false;
+let relayCodexDesktopRunning = !IS_WINDOWS || !RELAY_REQUIRE_CODEX_DESKTOP ? true : null;
+let relayStatus = {
+  configured: Boolean(RELAY_URL && RELAY_SECRET && RELAY_DEVICE_ID),
+  deviceId: RELAY_DEVICE_ID,
+  relayUrl: RELAY_URL,
+  publicBase: RELAY_PUBLIC_BASE,
+  connected: false,
+  state: RELAY_URL && RELAY_SECRET && RELAY_DEVICE_ID ? 'starting' : 'disabled',
+  codexWatchEnabled: Boolean(IS_WINDOWS && RELAY_REQUIRE_CODEX_DESKTOP),
+  codexDesktopRunning: relayCodexDesktopRunning,
+  codexLastCheckedAt: '',
+  lastConnectedAt: '',
+  lastDisconnectedAt: '',
+  lastError: '',
+  reconnectDelayMs: relayReconnectDelayMs,
+  heartbeatIntervalMs: RELAY_HEARTBEAT_INTERVAL_MS,
+  heartbeatTimeoutMs: RELAY_HEARTBEAT_TIMEOUT_MS,
+  codexWatchIntervalMs: RELAY_CODEX_WATCH_INTERVAL_MS,
+};
+
+function updateRelayStatus(patch) {
+  relayStatus = {
+    ...relayStatus,
+    ...patch,
+    reconnectDelayMs: relayReconnectDelayMs,
+  };
+}
+
+function relayStatusPayload() {
+  return {
+    ok: true,
+    ...relayStatus,
+    reconnectDelayMs: relayReconnectDelayMs,
+    now: new Date().toISOString(),
+  };
+}
+
+function handleRelayStatus(req, res) {
+  if (!isAuthorized(req)) return json(res, 401, { ok: false, code: 'UNAUTHORIZED', message: '访问令牌不正确。' });
+  return json(res, 200, relayStatusPayload());
+}
+
+function clearRelayHeartbeat() {
+  if (relayHeartbeatTimer) clearInterval(relayHeartbeatTimer);
+  relayHeartbeatTimer = null;
+}
+
+function clearRelayReconnectTimer() {
+  if (relayReconnectTimer) clearTimeout(relayReconnectTimer);
+  relayReconnectTimer = null;
+}
+
+function shouldGateRelayOnCodexDesktop() {
+  return Boolean(IS_WINDOWS && RELAY_REQUIRE_CODEX_DESKTOP);
+}
+
+function relayShouldPauseForCodexDesktop() {
+  return shouldGateRelayOnCodexDesktop() && relayCodexDesktopRunning !== true;
+}
+
+function closeRelayWebSocketForCodexDesktop() {
+  relayPausedForCodexDesktop = true;
+  clearRelayReconnectTimer();
+  clearRelayHeartbeat();
+  const ws = relayCurrentWs;
+  relayCurrentWs = null;
+  if (ws) {
+    try {
+      if (ws.readyState === 0 || ws.readyState === 1) ws.close(4001, 'codex-desktop-stopped');
+      else if (ws.readyState !== 3) ws.terminate();
+    } catch {
+      try { ws.terminate(); } catch {}
+    }
+  }
+  updateRelayStatus({
+    connected: false,
+    state: 'codex-stopped',
+    lastDisconnectedAt: new Date().toISOString(),
+    lastError: 'Codex desktop is not running',
+  });
+}
+
+async function isCodexDesktopRunning() {
+  if (!IS_WINDOWS) return true;
+  const { stdout } = await runWindowsPowerShell(`
+$proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+  Where-Object { $_.MainWindowHandle -ne 0 } |
+  Select-Object -First 1
+if ($proc) { '1' } else { '0' }
+`);
+  return stdout.trim().split(/\s+/).includes('1');
+}
+
+function startRelayCodexDesktopWatch(connect) {
+  if (!shouldGateRelayOnCodexDesktop() || relayCodexWatchTimer) return;
+
+  const check = async () => {
+    if (relayCodexWatchInFlight) return;
+    relayCodexWatchInFlight = true;
+    let running = false;
+    let errorText = '';
+    try {
+      running = await isCodexDesktopRunning();
+    } catch (error) {
+      errorText = error.message || 'Codex desktop check failed';
+    } finally {
+      relayCodexWatchInFlight = false;
+    }
+
+    const changed = relayCodexDesktopRunning !== running;
+    relayCodexDesktopRunning = running;
+    updateRelayStatus({
+      codexDesktopRunning: running,
+      codexLastCheckedAt: new Date().toISOString(),
+      lastError: running ? relayStatus.lastError : (errorText || 'Codex desktop is not running'),
+    });
+
+    if (!running) {
+      if (changed) console.log('Codex desktop stopped; closing public relay tunnel.');
+      closeRelayWebSocketForCodexDesktop();
+      return;
+    }
+
+    if (changed) console.log('Codex desktop is running; restoring public relay tunnel.');
+    if (relayPausedForCodexDesktop || relayStatus.state === 'codex-checking' || relayStatus.state === 'codex-stopped') {
+      relayPausedForCodexDesktop = false;
+      relayReconnectDelayMs = 1000;
+      clearRelayReconnectTimer();
+      connect();
+    }
+  };
+
+  updateRelayStatus({ state: 'codex-checking', codexWatchEnabled: true });
+  check();
+  relayCodexWatchTimer = setInterval(check, Math.max(1000, RELAY_CODEX_WATCH_INTERVAL_MS));
+}
+
+function clearRelayCodexDesktopWatch() {
+  if (relayCodexWatchTimer) clearInterval(relayCodexWatchTimer);
+  relayCodexWatchTimer = null;
+}
 
 function relayHmac(value) {
   return crypto.createHmac('sha256', RELAY_SECRET).update(String(value || '')).digest('base64url');
@@ -2179,27 +2330,100 @@ async function handleRelayTunnelMessage(ws, raw) {
 }
 
 function startRelayClient() {
-  if (!RELAY_URL || !RELAY_SECRET || !RELAY_DEVICE_ID) return;
+  if (!RELAY_URL || !RELAY_SECRET || !RELAY_DEVICE_ID) {
+    updateRelayStatus({ connected: false, state: 'disabled', lastError: 'relay is not configured' });
+    return;
+  }
   let WebSocket = null;
   try {
     WebSocket = require('ws');
   } catch (error) {
+    updateRelayStatus({ connected: false, state: 'disabled', lastError: error.message || 'ws dependency missing' });
     console.warn(`Relay disabled: install dependencies first (${error.message}).`);
     return;
   }
 
   const connect = () => {
+    if (relayShouldPauseForCodexDesktop()) {
+      closeRelayWebSocketForCodexDesktop();
+      return;
+    }
+    relayPausedForCodexDesktop = false;
+    updateRelayStatus({ connected: false, state: 'connecting' });
     const ws = new WebSocket(relayTunnelUrl(), { handshakeTimeout: 10000 });
+    relayCurrentWs = ws;
+    ws.isAlive = true;
     ws.on('open', () => {
+      if (relayShouldPauseForCodexDesktop()) {
+        closeRelayWebSocketForCodexDesktop();
+        return;
+      }
       relayReconnectDelayMs = 1000;
       relayApprovalNoticeShown = false;
+      clearRelayHeartbeat();
+      ws.isAlive = true;
+      ws.lastPongAt = Date.now();
+      updateRelayStatus({
+        connected: true,
+        state: 'connected',
+        lastConnectedAt: new Date().toISOString(),
+        lastError: '',
+      });
+      relayHeartbeatTimer = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const lastPongAt = ws.lastPongAt || Date.now();
+        if (!ws.isAlive && Date.now() - lastPongAt > RELAY_HEARTBEAT_TIMEOUT_MS) {
+          updateRelayStatus({
+            connected: false,
+            state: 'heartbeat-timeout',
+            lastError: 'relay heartbeat timed out',
+          });
+          ws.terminate();
+          return;
+        }
+        ws.isAlive = false;
+        try {
+          ws.ping();
+        } catch (error) {
+          updateRelayStatus({
+            connected: false,
+            state: 'heartbeat-error',
+            lastError: error.message || 'relay heartbeat failed',
+          });
+          ws.terminate();
+        }
+      }, RELAY_HEARTBEAT_INTERVAL_MS);
       console.log(`Relay connected as ${RELAY_DEVICE_ID}.`);
+    });
+    ws.on('pong', () => {
+      ws.isAlive = true;
+      ws.lastPongAt = Date.now();
+      if (relayStatus.state !== 'connected') {
+        updateRelayStatus({ connected: true, state: 'connected', lastError: '' });
+      }
     });
     ws.on('message', raw => handleRelayTunnelMessage(ws, raw));
     ws.on('close', () => {
+      if (relayCurrentWs === ws) relayCurrentWs = null;
+      clearRelayHeartbeat();
+      if (relayPausedForCodexDesktop || relayShouldPauseForCodexDesktop()) {
+        updateRelayStatus({
+          connected: false,
+          state: 'codex-stopped',
+          lastDisconnectedAt: new Date().toISOString(),
+          lastError: 'Codex desktop is not running',
+        });
+        return;
+      }
+      updateRelayStatus({
+        connected: false,
+        state: 'reconnecting',
+        lastDisconnectedAt: new Date().toISOString(),
+      });
       if (relayReconnectTimer) return;
       const delay = relayReconnectDelayMs;
       relayReconnectDelayMs = Math.min(relayReconnectDelayMs * 2, 30000);
+      updateRelayStatus({ reconnectDelayMs: relayReconnectDelayMs });
       relayReconnectTimer = setTimeout(() => {
         relayReconnectTimer = null;
         connect();
@@ -2207,6 +2431,7 @@ function startRelayClient() {
     });
     ws.on('error', error => {
       const message = String(error && error.message || '');
+      updateRelayStatus({ connected: false, state: 'error', lastError: message || 'relay connection error' });
       if (/Unexpected server response:\s*401/i.test(message)) {
         if (!relayApprovalNoticeShown) {
           relayApprovalNoticeShown = true;
@@ -2218,7 +2443,8 @@ function startRelayClient() {
     });
   };
 
-  connect();
+  if (shouldGateRelayOnCodexDesktop()) startRelayCodexDesktopWatch(connect);
+  else connect();
 }
 
 function cleanupRecentSendRequests() {
@@ -2226,6 +2452,67 @@ function cleanupRecentSendRequests() {
   for (const [id, entry] of recentSendRequests) {
     if (!entry || entry.createdAt < cutoff) recentSendRequests.delete(id);
   }
+}
+
+function updateSendProgress(clientRequestId, patch = {}) {
+  if (!clientRequestId) return null;
+  const existing = recentSendRequests.get(clientRequestId) || { createdAt: Date.now() };
+  const progress = {
+    ...(existing.progress || {}),
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  const next = {
+    ...existing,
+    createdAt: existing.createdAt || Date.now(),
+    progress,
+  };
+  recentSendRequests.set(clientRequestId, next);
+  return progress;
+}
+
+function sendProgressMessageForPhase(phase, fallback = '') {
+  const messages = {
+    accepted: '已收到消息，准备发送到 Codex',
+    checkingCodex: '正在检查 Codex 是否已启动',
+    startingCodex: '已检测到 Codex 未启动，正在启动 Codex',
+    activatingCodex: '正在切换到 Codex',
+    waitingCodex: '等待 Codex App 加载',
+    waitingComposer: '等待 Codex 输入框加载',
+    pasting: '正在粘贴并发送到 Codex',
+    confirming: '正在确认 Codex 已记录这条消息',
+    retryingFocus: '正在重新聚焦 Codex 输入框',
+    retryingSend: '正在点击 Codex 发送按钮',
+    sent: '已发送到 Codex',
+    queued: '这条发送请求已经被接收，正在继续等待 Codex 回复',
+    failed: '发送失败',
+  };
+  return fallback || messages[phase] || '';
+}
+
+function setSendProgress(clientRequestId, phase, message = '') {
+  return updateSendProgress(clientRequestId, {
+    phase,
+    message: sendProgressMessageForPhase(phase, message),
+  });
+}
+
+function handleSendStatus(req, res) {
+  if (!isAuthorized(req)) return json(res, 401, { ok: false, code: 'UNAUTHORIZED', message: '访问令牌不正确。' });
+  cleanupRecentSendRequests();
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const clientRequestId = normalizeClientRequestId(url.searchParams.get('id'));
+  if (!clientRequestId) return json(res, 400, { ok: false, code: 'BAD_REQUEST_ID', message: '请求 ID 不正确。' });
+  const entry = recentSendRequests.get(clientRequestId);
+  if (!entry) return json(res, 200, { ok: true, found: false });
+  return json(res, 200, {
+    ok: true,
+    found: true,
+    progress: entry.progress || null,
+    duplicate: Boolean(entry.result),
+    done: Boolean(entry.result),
+    watch: entry.watch || null,
+  });
 }
 
 function normalizeClientRequestId(value) {
@@ -2303,23 +2590,44 @@ async function windowsActivateCodexWindow({ startIfNeeded = true } = {}) {
   const appId = powerShellSingleQuote(`shell:AppsFolder\\${WINDOWS_CODEX_APP_ID}`);
   await runWindowsPowerShell(`
 $ErrorActionPreference = 'Stop'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexMiniActivateWin32 {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
 $shell = New-Object -ComObject WScript.Shell
+$started = $false
 if (-not $shell.AppActivate('Codex')) {
   if (${startIfNeeded ? '$true' : '$false'}) {
     Start-Process ${appId}
-    Start-Sleep -Milliseconds 900
+    $started = $true
   }
 }
 $activated = $false
-for ($i = 0; $i -lt 12; $i++) {
+$deadline = (Get-Date).AddMilliseconds(${WINDOWS_CODEX_STARTUP_TIMEOUT_MS})
+do {
+  $proc = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 } |
+    Sort-Object StartTime -Descending |
+    Select-Object -First 1
+  if ($proc) {
+    [void][CodexMiniActivateWin32]::ShowWindow($proc.MainWindowHandle, 9)
+    [void][CodexMiniActivateWin32]::SetForegroundWindow($proc.MainWindowHandle)
+  }
   if ($shell.AppActivate('Codex')) {
     $activated = $true
     break
   }
-  Start-Sleep -Milliseconds 250
-}
+  Start-Sleep -Milliseconds $(if ($started) { 350 } else { 180 })
+} while ((Get-Date) -lt $deadline)
 if (-not $activated) {
   throw 'Codex window could not be activated. Open Codex once, then retry.'
+}
+if ($started) {
+  Start-Sleep -Milliseconds 700
 }
 `);
   await delay(CODEX_APP_FOCUS_SETTLE_MS);
@@ -2470,6 +2778,39 @@ function Get-CodexMiniComposerPoint([IntPtr]$handle) {
   }
   return New-CodexMiniPoint $fallbackX $fallbackY
 }
+function Test-CodexMiniComposerReady([IntPtr]$handle) {
+  try {
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if (-not $window) { return $false }
+    $bounds = $window.Current.BoundingRectangle
+    $sidebarCutoff = $bounds.Left + [Math]::Min(340, [Math]::Max(280, [int]($bounds.Width * 0.2)))
+    $topCutoff = $bounds.Top + 180
+    $bottomReadyCutoff = $bounds.Bottom - [Math]::Max(260, [int]($bounds.Height * 0.35))
+    $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $item = $all.Item($i)
+      if ($item.Current.IsOffscreen) { continue }
+      $rect = $item.Current.BoundingRectangle
+      if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+      if ($rect.X -lt $sidebarCutoff -or $rect.Y -lt $topCutoff) { continue }
+      if ($rect.Y -lt $bottomReadyCutoff) { continue }
+      $name = [string]$item.Current.Name
+      $typeName = $item.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+      if ($name -match '(?i)(?:\\u968f\\u5fc3\\u8f93\\u5165|\\u8f93\\u5165|\\u6d88\\u606f|ask|message|prompt)') { return $true }
+      if ($typeName -eq 'Group' -and $rect.Width -ge 360 -and $rect.Height -ge 32 -and $rect.Height -le 160) { return $true }
+    }
+  } catch {
+  }
+  return $false
+}
+function Wait-CodexMiniComposerReady([IntPtr]$handle) {
+  $deadline = (Get-Date).AddMilliseconds(${WINDOWS_CODEX_STARTUP_TIMEOUT_MS})
+  do {
+    if (Test-CodexMiniComposerReady $handle) { return }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  throw 'Codex composer was not ready after startup.'
+}
 $shell = New-Object -ComObject WScript.Shell
 [void]$shell.AppActivate('Codex')
 Start-Sleep -Milliseconds 120
@@ -2483,6 +2824,7 @@ if (-not $proc) { throw 'Codex window handle not found after activation.' }
 Start-Sleep -Milliseconds 120
 Start-Sleep -Milliseconds 220
 Dismiss-CodexMiniBottomObstructions $proc.MainWindowHandle
+Wait-CodexMiniComposerReady $proc.MainWindowHandle
 $point = Get-CodexMiniComposerPoint $proc.MainWindowHandle
 Assert-CodexMiniPointIsInteractive ([int]$point.X) ([int]$point.Y)
 Click-CodexMiniPoint ([int]$point.X) ([int]$point.Y)
@@ -2803,9 +3145,43 @@ function Get-CodexMiniComposerPoint([IntPtr]$handle) {
   }
   return New-CodexMiniPoint $fallbackX $fallbackY
 }
+function Test-CodexMiniComposerReady([IntPtr]$handle) {
+  try {
+    $window = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
+    if (-not $window) { return $false }
+    $bounds = $window.Current.BoundingRectangle
+    $sidebarCutoff = $bounds.Left + [Math]::Min(340, [Math]::Max(280, [int]($bounds.Width * 0.2)))
+    $topCutoff = $bounds.Top + 180
+    $bottomReadyCutoff = $bounds.Bottom - [Math]::Max(260, [int]($bounds.Height * 0.35))
+    $all = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $item = $all.Item($i)
+      if ($item.Current.IsOffscreen) { continue }
+      $rect = $item.Current.BoundingRectangle
+      if ([double]::IsInfinity($rect.X) -or [double]::IsInfinity($rect.Y) -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
+      if ($rect.X -lt $sidebarCutoff -or $rect.Y -lt $topCutoff) { continue }
+      if ($rect.Y -lt $bottomReadyCutoff) { continue }
+      $name = [string]$item.Current.Name
+      $typeName = $item.Current.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+      if ($name -match '(?i)(?:\\u968f\\u5fc3\\u8f93\\u5165|\\u8f93\\u5165|\\u6d88\\u606f|ask|message|prompt)') { return $true }
+      if ($typeName -eq 'Group' -and $rect.Width -ge 360 -and $rect.Height -ge 32 -and $rect.Height -le 160) { return $true }
+    }
+  } catch {
+  }
+  return $false
+}
+function Wait-CodexMiniComposerReady([IntPtr]$handle) {
+  $deadline = (Get-Date).AddMilliseconds(${WINDOWS_CODEX_STARTUP_TIMEOUT_MS})
+  do {
+    if (Test-CodexMiniComposerReady $handle) { return }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  throw 'Codex composer was not ready after startup.'
+}
 $handle = Activate-CodexMiniWindow
 Start-Sleep -Milliseconds 220
 Dismiss-CodexMiniBottomObstructions $handle
+Wait-CodexMiniComposerReady $handle
 $point = Get-CodexMiniComposerPoint $handle
 Assert-CodexMiniPointIsInteractive ([int]$point.X) ([int]$point.Y)
 Click-CodexMiniPoint ([int]$point.X) ([int]$point.Y)
@@ -2835,6 +3211,7 @@ Start-Sleep -Milliseconds 120
 $handle = Activate-CodexMiniWindow
 Start-Sleep -Milliseconds 220
 Dismiss-CodexMiniBottomObstructions $handle
+Wait-CodexMiniComposerReady $handle
 $point = Get-CodexMiniComposerPoint $handle
 Assert-CodexMiniPointIsInteractive ([int]$point.X) ([int]$point.Y)
 Click-CodexMiniPoint ([int]$point.X) ([int]$point.Y)
@@ -3685,8 +4062,9 @@ async function handleSend(req, res) {
   cleanupRecentSendRequests();
   if (clientRequestId) {
     const existing = recentSendRequests.get(clientRequestId);
-    if (existing?.result) return json(res, 200, { ...existing.result, duplicate: true });
+    if (existing?.result) return json(res, 200, { ...existing.result, duplicate: true, progress: existing.progress || null });
     if (existing?.watch) {
+      setSendProgress(clientRequestId, 'queued');
       return json(res, 200, {
         ok: true,
         duplicate: true,
@@ -3694,6 +4072,7 @@ async function handleSend(req, res) {
         target,
         sentAt: existing.sentAt,
         watch: existing.watch,
+        progress: existing.progress || null,
       });
     }
   }
@@ -3709,6 +4088,8 @@ async function handleSend(req, res) {
   if (text.length > MAX_TEXT_LENGTH) {
     return json(res, 413, { ok: false, code: 'TEXT_TOO_LONG', message: `文字太长了，请控制在 ${MAX_TEXT_LENGTH} 字以内。` });
   }
+
+  setSendProgress(clientRequestId, 'accepted');
 
   try {
     const watchSince = new Date(Date.now() - 750).toISOString();
@@ -3727,9 +4108,26 @@ async function handleSend(req, res) {
         createdAt: Date.now(),
         sentAt: new Date().toISOString(),
         watch,
+        progress: recentSendRequests.get(clientRequestId)?.progress || setSendProgress(clientRequestId, 'accepted'),
       });
     }
+    if (target === 'codex') {
+      if (IS_WINDOWS) {
+        setSendProgress(clientRequestId, 'checkingCodex');
+        const codexRunning = await isCodexDesktopRunning().catch(() => true);
+        if (codexRunning) {
+          setSendProgress(clientRequestId, 'activatingCodex');
+          setSendProgress(clientRequestId, 'waitingComposer');
+        } else {
+          setSendProgress(clientRequestId, 'startingCodex');
+          setSendProgress(clientRequestId, 'waitingCodex');
+        }
+      } else {
+        setSendProgress(clientRequestId, 'activatingCodex');
+      }
+    }
     await pasteAndEnter(text, target, attachments, selectedThreadId, { assumeThreadSynced, skipComposerClick: directPasteWithoutClick });
+    setSendProgress(clientRequestId, 'confirming');
     let confirmedSendFile = null;
     if (expectNewThread && watch) {
       const newSessionFile = await waitForCodexSessionFileForNewSend({
@@ -3754,7 +4152,9 @@ async function handleSend(req, res) {
     if (target === 'codex' && text.trim() && !confirmedSendFile && IS_WINDOWS) {
       const dismissedObstruction = await windowsDismissCodexBottomObstructions().catch(() => false);
       if (dismissedObstruction) {
+        setSendProgress(clientRequestId, 'retryingFocus');
         await windowsPasteTextAndEnter(text, selectedThreadId, { assumeThreadSynced: true });
+        setSendProgress(clientRequestId, 'confirming');
         if (expectNewThread && watch) {
           const newSessionFile = await waitForCodexSessionFileForNewSend({
             sinceMs: watchSinceMs,
@@ -3779,6 +4179,7 @@ async function handleSend(req, res) {
     }
     if (target === 'codex' && text.trim() && !confirmedSendFile && IS_WINDOWS) {
       try {
+        setSendProgress(clientRequestId, 'retryingSend');
         await windowsClickCodexSendButton();
       } catch {
         // If UI Automation cannot see an enabled send button, keep the clearer
@@ -3819,16 +4220,19 @@ async function handleSend(req, res) {
       attachments: attachments.map(item => ({ name: item.name, size: item.size, type: item.mime })),
       watch,
     };
+    setSendProgress(clientRequestId, 'sent');
     if (clientRequestId) {
       recentSendRequests.set(clientRequestId, {
         createdAt: Date.now(),
         sentAt: result.sentAt,
         watch,
+        progress: recentSendRequests.get(clientRequestId)?.progress || null,
         result,
       });
     }
     return json(res, 200, result);
   } catch (error) {
+    setSendProgress(clientRequestId, 'failed', error && error.message || '');
     if (clientRequestId) recentSendRequests.delete(clientRequestId);
     if (error && error.code === 'CODEX_SEND_NOT_CONFIRMED') {
       return json(res, error.status || 502, {
@@ -3968,6 +4372,8 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') return options(res);
   if (req.method === 'GET' && req.url.startsWith('/codex/health')) return handleHealth(req, res);
   if (req.method === 'GET' && req.url.startsWith('/codex/config')) return handleClientConfig(req, res);
+  if (req.method === 'GET' && req.url.startsWith('/codex/relay-status')) return handleRelayStatus(req, res);
+  if (req.method === 'GET' && req.url.startsWith('/codex/send-status')) return handleSendStatus(req, res);
   if (req.method === 'POST' && req.url.startsWith('/send')) return handleSend(req, res);
   if (req.method === 'GET' && req.url.startsWith('/codex/threads')) return handleThreads(req, res);
   if (req.method === 'GET' && req.url.startsWith('/codex/history')) return handleThreadHistory(req, res);
@@ -3993,12 +4399,23 @@ server.listen(PORT, HOST, () => {
   startRelayClient();
 });
 
-process.on('exit', cleanupKeepAwake);
+process.on('exit', () => {
+  clearRelayHeartbeat();
+  clearRelayReconnectTimer();
+  clearRelayCodexDesktopWatch();
+  cleanupKeepAwake();
+});
 process.on('SIGINT', () => {
+  clearRelayHeartbeat();
+  clearRelayReconnectTimer();
+  clearRelayCodexDesktopWatch();
   cleanupKeepAwake();
   process.exit(130);
 });
 process.on('SIGTERM', () => {
+  clearRelayHeartbeat();
+  clearRelayReconnectTimer();
+  clearRelayCodexDesktopWatch();
   cleanupKeepAwake();
   process.exit(143);
 });

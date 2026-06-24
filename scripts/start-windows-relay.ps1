@@ -7,6 +7,7 @@ $LogDir = Join-Path $ProjectDir 'logs'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $script:LogPath = Join-Path $LogDir ("{0}.log" -f (Get-Date -Format 'yyyy-MM-dd_HHmmss'))
 $script:TranscriptStarted = $false
+$script:ManagedCodexProcess = $null
 try {
   Start-Transcript -Path $script:LogPath -Append | Out-Null
   $script:TranscriptStarted = $true
@@ -161,6 +162,19 @@ function Load-Or-CreateDeviceConfig {
   return Get-Content -LiteralPath $DeviceConfigPath -Raw | ConvertFrom-Json
 }
 
+function Save-DeviceConfig($Config) {
+  New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
+  $Config | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $DeviceConfigPath -Encoding UTF8
+}
+
+function Ensure-DeviceRuntimeFields($Config) {
+  if ([string]::IsNullOrWhiteSpace([string]$Config.localToken)) {
+    $Config | Add-Member -NotePropertyName localToken -NotePropertyValue (New-RandomToken 18) -Force
+    Save-DeviceConfig $Config
+  }
+  return $Config
+}
+
 function Resolve-NpmCmd([string] $NpmPath) {
   if ([string]::IsNullOrWhiteSpace($NpmPath)) {
     throw 'npm command is not configured.'
@@ -306,14 +320,170 @@ function Ensure-NodeDependencies {
   }
 }
 
-$device = Load-Or-CreateDeviceConfig
+function Test-TcpPort([string] $HostName, [int] $PortNumber) {
+  $client = New-Object Net.Sockets.TcpClient
+  try {
+    $result = $client.BeginConnect($HostName, $PortNumber, $null, $null)
+    if (!$result.AsyncWaitHandle.WaitOne(800, $false)) { return $false }
+    $client.EndConnect($result)
+    return $true
+  } catch {
+    return $false
+  } finally {
+    $client.Close()
+  }
+}
+
+function Get-RelayStatus([string] $BaseUrl, [string] $Token, [switch] $Quiet) {
+  try {
+    return Invoke-RestMethod -Method Get -Uri "$BaseUrl/codex/relay-status" -Headers @{ 'x-mobile-typer-token' = $Token } -TimeoutSec 5
+  } catch {
+    if (!$Quiet) {
+      Write-Host "Relay status check failed: $($_.Exception.Message)"
+    }
+    return $null
+  }
+}
+
+function Start-CodexMiniProcess {
+  $info = New-Object Diagnostics.ProcessStartInfo
+  $info.FileName = $script:NodeExe
+  $info.Arguments = 'server.js'
+  $info.WorkingDirectory = [string]$ProjectDir
+  $info.UseShellExecute = $false
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $info
+  if (!$process.Start()) {
+    throw 'Failed to start Codex Mini node process.'
+  }
+  return $process
+}
+
+function Stop-CodexMiniProcess($Process) {
+  if (!$Process -or $Process.HasExited) { return }
+  try {
+    $Process.CloseMainWindow() | Out-Null
+    Start-Sleep -Milliseconds 800
+  } catch {
+  }
+  if (!$Process.HasExited) {
+    try { Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue } catch {}
+  }
+  if ($script:ManagedCodexProcess -and $script:ManagedCodexProcess.Id -eq $Process.Id) {
+    $script:ManagedCodexProcess = $null
+  }
+}
+
+function Wait-ForRelayStatus([string] $BaseUrl, [string] $Token, [int] $TimeoutSeconds) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $status = Get-RelayStatus $BaseUrl $Token -Quiet
+    if ($status) { return $status }
+    Start-Sleep -Seconds 1
+  } while ((Get-Date) -lt $deadline)
+  return $null
+}
+
+function Watch-CodexMiniRelay([string] $BaseUrl, [string] $Token, [string] $ExpectedDeviceId) {
+  $process = $null
+  $restartDelayMs = 1000
+  $offlineSince = $null
+  $lastState = ''
+  $managedProcess = $true
+  $localPort = 8787
+  if (![string]::IsNullOrWhiteSpace($env:PORT)) {
+    $localPort = [int]$env:PORT
+  }
+
+  $existing = Get-RelayStatus $BaseUrl $Token -Quiet
+  if ($existing -and $existing.deviceId -eq $ExpectedDeviceId) {
+    Write-Host ''
+    Write-Host "Existing Codex Mini service is already running on $BaseUrl."
+    Write-Host 'Monitoring existing service. Restart this script if that old service stops responding.'
+    $managedProcess = $false
+  } elseif (Test-TcpPort '127.0.0.1' $localPort) {
+    throw "Port $localPort is already in use, but it did not expose this device's relay status. Close the old Codex Mini window and run this script again."
+  }
+
+  while ($true) {
+    if ($managedProcess -and (!$process -or $process.HasExited)) {
+      if ($process -and $process.HasExited) {
+        Write-Host "Codex Mini node process exited with code $($process.ExitCode). Restarting..."
+        Start-Sleep -Milliseconds $restartDelayMs
+        $restartDelayMs = [Math]::Min($restartDelayMs * 2, 30000)
+      }
+      $process = Start-CodexMiniProcess
+      $script:ManagedCodexProcess = $process
+      Write-Host "Supervisor started Codex Mini node process PID $($process.Id)."
+      Wait-ForRelayStatus $BaseUrl $Token 20 | Out-Null
+      $offlineSince = $null
+    }
+
+    $status = Get-RelayStatus $BaseUrl $Token -Quiet
+    $now = Get-Date
+    if ($status -and $status.connected -eq $true) {
+      $offlineSince = $null
+      $restartDelayMs = 1000
+      if ($lastState -ne 'connected') {
+        Write-Host "Relay status: connected as $($status.deviceId)."
+        $lastState = 'connected'
+      }
+      Start-Sleep -Seconds 5
+      continue
+    }
+
+    $state = if ($status) { [string]$status.state } else { 'local-unreachable' }
+    if ($state -eq 'codex-stopped' -or $state -eq 'codex-checking') {
+      $offlineSince = $null
+      if ($lastState -ne $state) {
+        if ($state -eq 'codex-stopped') {
+          Write-Host 'Relay access is paused because Codex is not running. Waiting for Codex to start...'
+        } else {
+          Write-Host 'Checking Codex desktop before opening relay access...'
+        }
+        $lastState = $state
+      }
+      Start-Sleep -Seconds 5
+      continue
+    }
+
+    if (!$offlineSince) {
+      $offlineSince = $now
+      Write-Host "Relay status: $state. Waiting for automatic recovery..."
+      $lastState = $state
+    } elseif ($lastState -ne $state) {
+      Write-Host "Relay status: $state."
+      $lastState = $state
+    }
+
+    $offlineSeconds = ($now - $offlineSince).TotalSeconds
+    if ($offlineSeconds -ge 60) {
+      if ($managedProcess) {
+        Write-Host "Relay has been unavailable for $([int]$offlineSeconds) seconds. Restarting Codex Mini node process..."
+        Stop-CodexMiniProcess $process
+        $process = $null
+        $offlineSince = $null
+      } else {
+        Write-Host 'Existing Codex Mini service is unhealthy and was not started by this supervisor. Close the old Codex Mini window, then run this script again.'
+        Start-Sleep -Seconds 10
+      }
+    } else {
+      Write-Host "Relay reconnecting... $([int]$offlineSeconds)s elapsed."
+      Start-Sleep -Seconds 5
+    }
+  }
+}
+
+$device = Ensure-DeviceRuntimeFields (Load-Or-CreateDeviceConfig)
 
 $env:CODEX_MINI_RELAY_URL = [string]$device.relayUrl
 $env:CODEX_MINI_RELAY_PUBLIC_BASE = [string]$device.publicBase
 $env:CODEX_MINI_RELAY_DEVICE_ID = [string]$device.deviceId
 $env:CODEX_MINI_RELAY_SECRET = [string]$device.relaySecret
 $env:CODEX_MINI_RELAY_PASSPHRASE = [string]$device.passphrase
+$env:MOBILE_TYPER_TOKEN = [string]$device.localToken
 $env:CODEX_MINI_QR_DIR = [string]$ProjectDir
+if ([string]::IsNullOrWhiteSpace($env:PORT)) { $env:PORT = '8787' }
 
 Ensure-NodeRuntime
 Ensure-NodeDependencies
@@ -326,9 +496,12 @@ Write-Host 'Phone URL:'
 Write-Host "  $($device.publicBase)/#k=$([uri]::EscapeDataString($device.passphrase))"
 Write-Host ''
 Write-Host 'Keep this window open while using the phone client.'
+Write-Host 'Supervisor will restart the local relay automatically if it becomes unhealthy.'
 Write-Host ''
 
-Invoke-Npm start
-$exitCode = $LASTEXITCODE
-Stop-DesktopLog
-exit $exitCode
+try {
+  Watch-CodexMiniRelay "http://127.0.0.1:$env:PORT" ([string]$device.localToken) ([string]$device.deviceId)
+} finally {
+  Stop-CodexMiniProcess $script:ManagedCodexProcess
+  Stop-DesktopLog
+}

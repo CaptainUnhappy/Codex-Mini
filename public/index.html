@@ -4935,6 +4935,49 @@
       updateTitleDotState();
     }
 
+    function startSendProgressPolling(clientRequestId, options = {}) {
+      if (!clientRequestId) return () => {};
+      let stopped = false;
+      let lastPhase = '';
+      let lastMessage = '';
+      let timer = null;
+      const poll = async () => {
+        if (stopped) return;
+        try {
+          const params = new URLSearchParams({ id: clientRequestId, token });
+          const response = await fetchApi(`/codex/send-status?${params}`, {
+            cache: 'no-store',
+            headers: { 'x-mobile-typer-token': token },
+            apiTimeoutMs: 5000,
+            routeSwitchQuiet: true,
+            retryProbeTimeoutMs: 700,
+          });
+          const data = await response.json().catch(() => ({}));
+          const progress = data && data.ok && data.found ? data.progress : null;
+          const phase = String(progress?.phase || '');
+          const message = String(progress?.message || '');
+          if (message && (phase !== lastPhase || message !== lastMessage)) {
+            lastPhase = phase;
+            lastMessage = message;
+            setNotice(message, options.type || 'ok');
+          }
+          if (data.done) {
+            stopped = true;
+            if (timer) clearInterval(timer);
+          }
+        } catch {
+          // Send progress is best-effort; the main /send request still owns
+          // success and failure reporting.
+        }
+      };
+      poll();
+      timer = setInterval(poll, 700);
+      return () => {
+        stopped = true;
+        if (timer) clearInterval(timer);
+      };
+    }
+
     async function sendText(options = {}) {
       const hasTextOverride = typeof options.text === 'string';
       const isPendingNewThreadFirstSend = Boolean(pendingNewThread && !selectedThreadId);
@@ -4993,8 +5036,9 @@
         renderAttachmentTray();
         autosize();
       }
+      const clientRequestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const stopSendProgressPolling = startSendProgressPolling(clientRequestId);
       try {
-        const clientRequestId = `send-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const res = await fetchApi('/send', {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'x-mobile-typer-token': token },
@@ -5032,6 +5076,7 @@
         }
         setNotice(error.message || '发送失败', 'error');
       } finally {
+        stopSendProgressPolling();
         sendButton.disabled = false;
         if (!activeAssistant && !pollTimer) setWorkingDot(false);
         if (hasTextOverride) restoreLayoutAfterKeyboard();
