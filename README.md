@@ -10,36 +10,50 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 >
 > 本仓库也保留开源维护版本，适合有开发能力的朋友自行部署、改造和二次开发。构建版会优先提供最新功能，源码可能不会第一时间同步全部能力。
 
+## 🐛 反馈 Bug / 提建议
+
+遇到问题或有建议？**[→ 点这里提交反馈](http://47.110.74.238/codex-mini-feedback/)** —— 发一张截图 + 写一段话，开发者会直接看到并处理；也可以加 **QQ 群：760669553**。
+
 ## 当前发布版本
 
-- 版本：macOS v4.2.2 / Windows v4.0.0
-- macOS 安装包：[下载 Codex Mini v4.2.2.dmg](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.2/Codex.Mini.v4.2.2.dmg)
-- Windows 安装包：[下载 Codex Mini Windows v4.0.0.exe](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.2.2/CodexMiniWindowsSetup-v4.0.0.exe)
-- Release 页面：[codex-mini-v4.2.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.2.2)
-- 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 直接运行 EXE 安装
+- 版本：v4.4.3（macOS 与 Windows 已对齐）
+- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[Codex Mini v4.4.3（Apple Silicon 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.3/CodexMini_v4.4.3_macOS_AppleSilicon.dmg)
+- 💻 macOS · Intel 芯片（x86）：[Codex Mini v4.4.3（Intel Mac 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.3/CodexMini_v4.4.3_macOS_Intel.dmg)
+- 🪟 Windows（10 / 11，64 位）：[Codex Mini v4.4.3（Windows 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.3/CodexMini_v4.4.3_Windows_Setup.exe)
+- 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
+- Release 页面：[codex-mini-v4.4.3](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.4.3)
+- 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node），装完从桌面或开始菜单启动
 
-### 最新版 V4.2.2
+### 最新版 V4.4.3
 
-- **重大更新：新增官方 Windows 版安装包，Windows 版按 v4.0.0 独立版本线发布**
-- 优化启动稳定性
-- 减少重复完成提醒
-- 修复已知 bug
+- **打开即见聊天记录**：打开 App 或线程标题刷新时，会自动把当前线程的聊天记录加载出来，不再出现「已选中线程、聊天区却空白」
+- **待发送「引导」消息修复**：排队中的引导卡片现在会稳定显示，不再偶发不出现
+- **Windows 控制面板任务栏图标与退出菜单**：托盘操作更顺手（仅 Windows）
+- **Windows 远程 SSH 修复**：远程线程的主机匹配更稳定，远程连接更可靠（仅 Windows）
 
-### V4.2 重点回顾
+### V4.4.2
 
-- 新增 SSH 服务器连接：手机端可以查看和接入远程 SSH 服务器上的 Codex 线程
-- 远程 SSH 线程支持独立分区显示，项目列表会自动展开并归类到“SSH 服务器”区域
-- 远程线程聊天记录可从服务器 `~/.codex/sessions` 读取，手机端可直接加载历史和回复过程
-- 优化远程 SSH 线程回复轮询，长回复不会因为轮询次数到头而强制刷新
-- 远程回复中断或网络异常时提示更清楚，减少误以为任务停止的情况
+- **三平台安装包同步发布**：Apple Silicon、Intel 和 Windows 三个安装包已对齐到 4.4.2
+- **线程列表可继续加载更早对话**：不再把较早会话隐藏在固定数量之后
+- **SSH 远程线程显示修复**：远程线程不会被本机分页数量截掉
+- **Windows 安装器更干净**：只保留运行必需内容，不包含内部文档、打包脚本或构建源码
 
-### V4.0～V4.1 重点回顾
+### V4.3.1
 
-- **V4.0 重大升级**：改为全 CDP 控制链路，响应速度更快，发送更快，后台静默运行更稳定
-- 正式名称统一为 `Codex Mini.app`，安装包统一为拖拽式 `Codex.Mini.v<version>.dmg`
-- V4.1 增加附件能力和设置面板，可管理外观、签名、顶部胶囊显示与顺序等
-- 安装 V4.x 前请完整删除旧 `Codex Mini Beta.app` 和残留运行文件，建议使用第三方卸载工具删干净
-- 如果正在使用 Codex++ 或其他 CDP 控制工具，可能会冲突，只能保留一个；V3.0 的 GUI 自动化链路不受影响
+- **兼容 Codex++**：检测到 Codex++ 后，手机端免点击直接控制同一个 Codex，无需为两者分别开启 Codex，两者可以同时共存协作
+- 设置页新增「Bug 反馈」入口：遇到问题可以直接从手机提交截图和文字反馈
+- 内置前端热更新机制：常用界面的小改进能更快、更稳地下发到你的 App
+- 控制面板右下角显示版本号
+- 优化 App 内「使用助手」与安装 / 排错指引
+
+### V4.0 ～ V4.2 重点回顾
+
+- **V4.0 全 CDP 控制链路**：响应和发送更快、后台静默运行更稳定；正式名称统一为 `Codex Mini.app`、安装包统一为拖拽式 DMG
+- **V4.1**：新增附件能力与设置面板（外观、签名、顶部胶囊显示与顺序）
+- **V4.2 · SSH 远程**：手机端可查看 / 接入远程服务器上的 Codex 线程，远程线程独立分区显示、可从 `~/.codex/sessions` 加载历史，长回复轮询与中断提示更稳更清晰
+- **官方 Windows 版**：新增 Windows 安装包（独立版本线），桌面运行控制面板，保留手机网页控制、局域网与 Pro 外网入口
+- **同步与稳定**：电脑 Codex 上直接发的消息会同步到手机端，手机线程列表与电脑端保持一致；降低轮询占用，多设备同时使用更流畅
+- 安装 V4.x 前请完整删除旧 `Codex Mini Beta.app` 与残留文件；若在用 Codex++ 等 CDP 工具，旧版本可能冲突（**V4.3 起已支持与 Codex++ 共存**）
 
 ## 界面预览
 
@@ -61,13 +75,13 @@ QQ 群：**760669553**
 
 ## Windows 版本
 
-官方 Windows 安装包已经随 v4.2.2 Release 一起发布，文件名是 `CodexMiniWindowsSetup-v4.0.0.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
+官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMini_v4.4.2_Windows_Setup.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
 
 社区项目 [atuizz/codex-max](https://github.com/atuizz/codex-max) 仍可作为另一个 Windows 方向参考。
 
 ## 安装与使用
 
-1. 按系统下载 `Codex.Mini.v4.2.2.dmg` 或 `CodexMiniWindowsSetup-v4.0.0.exe`
+1. 按系统下载对应的 `CodexMini_v4.4.2_macOS_AppleSilicon.dmg`、`CodexMini_v4.4.2_macOS_Intel.dmg` 或 `CodexMini_v4.4.2_Windows_Setup.exe`
 2. macOS 安装前完整删除旧 `Codex Mini Beta.app`，建议用第三方卸载工具清理旧 App、旧 LaunchAgent 和旧运行目录
 3. macOS 打开 DMG，把 `Codex Mini.app` 拖到 `Applications`；Windows 直接运行 EXE 安装
 4. 打开 Codex Mini
