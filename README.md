@@ -16,14 +16,22 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 
 ## 当前发布版本
 
-- 版本：v4.5.1（macOS 与 Windows 已对齐）
-- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[Codex Mini v4.5.1（Apple Silicon 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.1/CodexMini_v4.5.1_macOS_AppleSilicon.dmg)
-- 💻 macOS · Intel 芯片（x86）：[Codex Mini v4.5.1（Intel Mac 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.1/CodexMini_v4.5.1_macOS_Intel.dmg)
-- 🪟 Windows（10 / 11，64 位）：[Codex Mini v4.5.1（Windows 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.1/CodexMini_v4.5.1_Windows_Setup.exe)
-- 🤖 **Android 手机专用**：[Codex Mini Android v1.3（安卓版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.1/Codex-Mini-Android-v1.3.apk)
+- 版本：v4.5.2（macOS 与 Windows 已对齐）
+- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[Codex Mini v4.5.2（Apple Silicon 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/CodexMini_v4.5.2_macOS_AppleSilicon.dmg)
+- 💻 macOS · Intel 芯片（x86）：[Codex Mini v4.5.2（Intel Mac 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/CodexMini_v4.5.2_macOS_Intel.dmg)
+- 🪟 Windows（10 / 11，64 位）：[Codex Mini v4.5.2（Windows 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/CodexMini_v4.5.2_Windows_Setup.exe)
+- 🤖 **Android 手机专用**：[Codex Mini Android v1.3（安卓版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/Codex-Mini-Android-v1.3.apk)
 - 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
-- Release 页面：[codex-mini-v4.5.1](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.5.1)
+- Release 页面：[codex-mini-v4.5.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.5.2)
 - 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node）；Android 下载 APK 后按系统提示安装
+
+### 最新版 V4.5.2
+
+- **项目列表更清爽**：项目里默认只展开前 5 条线程，后续线程可点「展开 / 收回」查看，列表更紧凑
+- **设置页更顺手**：状态与列表、外观、连接、电脑守护助手和 Bug 反馈入口重新整理，状态显示支持按住拖动排序
+- **附件显示更稳定**：文件、图片和 Markdown 附件统一沉到回复底部，减少正文中间误插文件卡片
+- **回复内容更干净**：隐藏内部交接摘要和过程提纲，避免大段非用户回复内容出现在手机端
+- **状态灯与守护显示修复**：状态灯闪烁更同步；Mac 守护模式里关闭线程卡片后会立即刷新显示
 
 ### 最新版 V4.5.1
 
@@ -84,7 +92,7 @@ QQ 群：**760669553**
 
 ## Windows 版本
 
-官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMini_v4.5.1_Windows_Setup.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
+官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMini_v4.5.2_Windows_Setup.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
 
 ## Android 版本
 
@@ -94,7 +102,7 @@ Android 手机专用安装包已经随最新 Release 一起提供，文件名是
 
 ## 安装与使用
 
-1. 按系统下载对应的 `CodexMini_v4.5.1_macOS_AppleSilicon.dmg`、`CodexMini_v4.5.1_macOS_Intel.dmg`、`CodexMini_v4.5.1_Windows_Setup.exe`；安卓手机用户下载 `Codex-Mini-Android-v1.3.apk`
+1. 按系统下载对应的 `CodexMini_v4.5.2_macOS_AppleSilicon.dmg`、`CodexMini_v4.5.2_macOS_Intel.dmg`、`CodexMini_v4.5.2_Windows_Setup.exe`；安卓手机用户下载 `Codex-Mini-Android-v1.3.apk`
 2. macOS 安装前完整删除旧 `Codex Mini Beta.app`，建议用第三方卸载工具清理旧 App、旧 LaunchAgent 和旧运行目录
 3. macOS 打开 DMG，把 `Codex Mini.app` 拖到 `Applications`；Windows 直接运行 EXE 安装；Android 下载 APK 后按系统提示安装
 4. 打开 Codex Mini
