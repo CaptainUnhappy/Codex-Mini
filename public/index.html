@@ -25,6 +25,7 @@
       --top-control-size: 26px;
       --thread-composer-gap: 6px;
       --thread-menu-edge-gap: 12px;
+      --status-pulse-ms: 1550ms;
       --notice-top-gap: 8px;
       --panel: #171717;
       --panel-2: #242424;
@@ -834,6 +835,24 @@
     .project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .thread-list { display: grid; gap: 2px; }
     .project-group:not(.is-open) .thread-list { display: none; }
+    .thread-list-toggle {
+      appearance: none;
+      border: 0;
+      width: calc(100% - 40px);
+      min-height: 30px;
+      margin: 3px 0 2px 40px;
+      padding: 6px 9px;
+      border-radius: 10px;
+      background: rgba(255,255,255,.035);
+      color: var(--faint);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .thread-list-toggle:hover, .thread-list-toggle:active { background: rgba(255,255,255,.06); color: var(--muted); }
     .thread-option {
       appearance: none;
       border: 0;
@@ -909,7 +928,7 @@
       border-radius: 999px;
       border: 2px solid rgba(255,255,255,.24);
       border-top-color: rgba(244,244,245,.92);
-      animation: threadSpin .85s linear infinite;
+      animation: threadSpin var(--status-pulse-ms) linear infinite;
     }
     .thread-option.is-conversation { padding-left: 12px; }
     .empty-thread-menu { padding: 18px 12px; color: var(--muted); font-size: 13px; }
@@ -984,7 +1003,7 @@
       --dot-shadow-peak: 0 0 13px 3px rgba(255,174,69,.76);
     }
     body.dot-flashing .title-dot {
-      animation: dotFlash 1.55s ease-in-out infinite;
+      animation: dotFlash var(--status-pulse-ms) ease-in-out infinite;
     }
     @keyframes dotFlash {
       0%, 100% {
@@ -1177,6 +1196,20 @@
       line-height: 1.48;
     }
     .bubble img.attachment-preview {
+      display: block;
+      max-width: min(260px, 68vw);
+      max-height: 260px;
+      border-radius: 14px;
+      object-fit: cover;
+    }
+    .message-attachments {
+      margin-top: 8px;
+      display: grid;
+      gap: 7px;
+      justify-items: start;
+    }
+    .message.user .message-attachments { justify-items: end; }
+    .message-attachments img.attachment-preview {
       display: block;
       max-width: min(260px, 68vw);
       max-height: 260px;
@@ -1830,13 +1863,16 @@
     let lastOutsideComposerTouchAt = 0;
     let suppressNextTextareaBlurRestore = false;
     const STORAGE_PREFIX = 'codexMiniChat.v3';
+    const CONTEXT_DISPLAY_ORDER_STORAGE_KEY = 'codexMini.contextDisplayOrder.v1';
     const GROUPS_STORAGE_KEY = 'codexMini.threadGroups.open.v1';
+    const PROJECT_THREAD_EXPANDED_STORAGE_KEY = 'codexMini.projectThreads.expanded.v1';
     const THREAD_NOTICE_STORAGE_KEY = 'codexMini.threadCompleteNotices.v1';
     const REASONING_OVERRIDE_STORAGE_KEY = 'codexMini.reasoningOverrides.v1';
     const MODEL_OVERRIDE_STORAGE_KEY = 'codexMini.modelOverrides.v1';
     const ROUTE_BADGE_COMPACT_STORAGE_KEY = 'codexMini.routeBadgeCompact.v1';
     const THREAD_NOTICE_MAX_AGE_MS = 30 * 60 * 1000;
-    const THREAD_SPINNER_MS = 850;
+    const THREAD_SPINNER_MS = 1550;
+    const PROJECT_THREAD_PREVIEW_LIMIT = 5;
     const LOCAL_STOP_SUPPRESS_MS = 2 * 60 * 1000;
     const REASONING_MODE_OPTIONS = [
       { key: 'low', label: '低', displayName: '低' },
@@ -1845,6 +1881,7 @@
       { key: 'xhigh', label: '超高', displayName: '超高' },
     ];
     const MODEL_MENU_OPTIONS = [];
+    const DEFAULT_CONTEXT_DISPLAY_ORDER = [0, 1, 2];
     let modelMenuOptions = [...MODEL_MENU_OPTIONS];
     let localOnlyMode = true;
     let apiConfigRefreshBusy = false;
@@ -1860,11 +1897,23 @@
       document.cookie = `codexMiniToken=${encodeURIComponent(queryToken)}; Path=/; SameSite=Lax; Max-Age=31536000`;
     }
     let openProjectKeys = readOpenProjectKeys();
+    let expandedProjectThreadKeys = readExpandedProjectThreadKeys();
     const threadRuntimeStates = new Map();
     const locallyStoppedThreads = new Map();
     let completedThreadNoticeTimes = new Map();
     const completedThreadIds = readCompletedThreadIds();
     let lastThreadMenuSignature = '';
+
+    function readContextDisplayOrder() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(CONTEXT_DISPLAY_ORDER_STORAGE_KEY) || '[]');
+        const values = Array.isArray(rows) ? rows.map(Number).filter(value => Number.isInteger(value) && value >= 0 && value <= 2) : [];
+        const unique = [...new Set(values)];
+        return unique.length ? unique : DEFAULT_CONTEXT_DISPLAY_ORDER;
+      } catch {
+        return DEFAULT_CONTEXT_DISPLAY_ORDER;
+      }
+    }
 
     function escapeHtml(value) {
       return String(value || '').replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
@@ -2033,7 +2082,32 @@
         : markdownToHtmlWithoutMemory(part.value)).join('');
       return html || '<p></p>';
     }
-    function setMarkdown(el, markdown) { el.innerHTML = markdownToHtml(markdown); }
+    function cleanAssistantMarkdown(markdown) {
+      let value = String(markdown || '');
+      value = value.replace(/<oai-mem-citation>[\s\S]*?<\/oai-mem-citation>/gi, '').trim();
+      const lines = value.split(/\r?\n/);
+      const kept = [];
+      let skippingInternalBlock = false;
+      const internalHeading = /^(?:#{1,6}\s*)?(?:内部)?(?:交接摘要|过程提纲|执行提纲|handoff summary|process outline|internal summary)\b/i;
+      const heading = /^#{1,6}\s+\S/;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (internalHeading.test(trimmed)) {
+          skippingInternalBlock = true;
+          continue;
+        }
+        if (skippingInternalBlock) {
+          if (heading.test(trimmed)) skippingInternalBlock = false;
+          else continue;
+        }
+        kept.push(line);
+      }
+      return kept.join('\n').trim();
+    }
+    function setMarkdown(el, markdown) {
+      const value = el?.dataset?.role === 'assistant' ? cleanAssistantMarkdown(markdown) : markdown;
+      el.innerHTML = markdownToHtml(value);
+    }
     function lockViewportZoom() {
       let lastTouchEndAt = 0;
       document.addEventListener('gesturestart', event => event.preventDefault(), { passive: false });
@@ -2237,7 +2311,9 @@
       updateModelFromStatus(data);
     }
     function cycleContextDisplayMode() {
-      contextDisplayMode = (contextDisplayMode + 1) % 3;
+      const order = readContextDisplayOrder();
+      const currentIndex = order.indexOf(contextDisplayMode);
+      contextDisplayMode = order[(currentIndex + 1) % order.length] ?? DEFAULT_CONTEXT_DISPLAY_ORDER[0];
       localStorage.setItem(CONTEXT_DISPLAY_MODE_STORAGE_KEY, String(contextDisplayMode));
       renderContextIndicator();
     }
@@ -3101,6 +3177,19 @@
       localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify([...openProjectKeys]));
     }
 
+    function readExpandedProjectThreadKeys() {
+      try {
+        const keys = JSON.parse(localStorage.getItem(PROJECT_THREAD_EXPANDED_STORAGE_KEY) || '[]');
+        return new Set(Array.isArray(keys) ? keys.filter(Boolean) : []);
+      } catch {
+        return new Set();
+      }
+    }
+
+    function persistExpandedProjectThreadKeys() {
+      localStorage.setItem(PROJECT_THREAD_EXPANDED_STORAGE_KEY, JSON.stringify([...expandedProjectThreadKeys]));
+    }
+
     function readCompletedThreadIds() {
       try {
         const raw = JSON.parse(localStorage.getItem(THREAD_NOTICE_STORAGE_KEY) || '[]');
@@ -3484,7 +3573,7 @@
         if (step.kind === 'thinking') {
           item.className = 'process-thinking markdown-body';
           const body = document.createElement('div');
-          body.innerHTML = markdownToHtml(step.text || '正在分析请求');
+          body.innerHTML = markdownToHtml(cleanAssistantMarkdown(step.text || '正在分析请求'));
           item.append(body);
         } else {
           item.className = step.kind === 'complete' ? 'process-complete' : step.kind === 'error' ? 'process-error' : 'process-start';
@@ -3629,12 +3718,19 @@
 
     function appendImagesToBubble(message, attachments) {
       if (!attachments.length) return;
+      const host = message.wrap || message.article?.querySelector('.bubble-wrap') || message.bubble;
+      let list = host.querySelector(':scope > .message-attachments');
+      if (!list) {
+        list = document.createElement('div');
+        list.className = 'message-attachments';
+        host.appendChild(list);
+      }
       for (const item of attachments) {
         const img = document.createElement('img');
         img.className = 'attachment-preview';
         img.src = item.dataUrl;
         img.alt = item.name || '图片';
-        message.bubble.appendChild(img);
+        list.appendChild(img);
       }
     }
 
@@ -3647,13 +3743,14 @@
       wrap.className = 'bubble-wrap';
       meta.className = 'meta';
       bubble.className = 'bubble markdown-body';
+      bubble.dataset.role = role;
       setMetaLabel(meta, options.label || (role === 'user' ? '你' : 'Codex'));
       setMarkdown(bubble, text);
       wrap.append(meta, bubble);
       article.appendChild(wrap);
       thread.appendChild(article);
       if (!options.skipScroll) scrollBottom();
-      return { article, bubble, meta, role };
+      return { article, wrap, bubble, meta, role };
     }
 
     function addDetails(message, steps = []) {
@@ -3754,7 +3851,8 @@
         .map(item => `${item.id}:${item.name || ''}:${item.pinned ? 'pinned' : 'normal'}:${threadMenuStateForItem(item)}`)
         .join('|');
       const openPart = [...openProjectKeys].sort().join(',');
-      return `${selectedThreadId}::${openPart}::${threadPart}`;
+      const expandedPart = [...expandedProjectThreadKeys].sort().join(',');
+      return `${selectedThreadId}::${openPart}::${expandedPart}::${threadPart}`;
     }
 
     function renderThreadMenuIfVisualChanged() {
@@ -3878,6 +3976,10 @@
 
     function appendProjectGroup(parent, group, isCurrent = false) {
       const isOpen = openProjectKeys.has(group.key);
+      const sortedItems = sortThreadsByTime(group.items);
+      const isThreadListExpanded = expandedProjectThreadKeys.has(group.key);
+      const hiddenCount = Math.max(0, sortedItems.length - PROJECT_THREAD_PREVIEW_LIMIT);
+      const visibleItems = isThreadListExpanded || !hiddenCount ? sortedItems : sortedItems.slice(0, PROJECT_THREAD_PREVIEW_LIMIT);
       const wrap = document.createElement('div');
       const header = document.createElement('button');
       const folder = document.createElement('span');
@@ -3905,7 +4007,24 @@
         persistOpenProjectKeys();
         renderThreadMenu();
       });
-      for (const item of sortThreadsByTime(group.items)) appendThreadOption(list, item);
+      for (const item of visibleItems) appendThreadOption(list, item);
+      if (hiddenCount) {
+        const toggle = document.createElement('button');
+        toggle.className = 'thread-list-toggle';
+        toggle.type = 'button';
+        toggle.textContent = isThreadListExpanded ? '收回' : `展开 ${hiddenCount} 条`;
+        toggle.setAttribute('aria-expanded', String(isThreadListExpanded));
+        toggle.setAttribute('aria-label', `${isThreadListExpanded ? '收回' : '展开'} ${group.name || '项目'} 的更多线程`);
+        toggle.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (expandedProjectThreadKeys.has(group.key)) expandedProjectThreadKeys.delete(group.key);
+          else expandedProjectThreadKeys.add(group.key);
+          persistExpandedProjectThreadKeys();
+          renderThreadMenu();
+        });
+        list.appendChild(toggle);
+      }
       wrap.append(header, list);
       parent.appendChild(wrap);
     }
@@ -4445,10 +4564,16 @@
               skipScroll: true,
             });
             if (row.attachments?.length) {
+              let attachments = msg.wrap.querySelector(':scope > .message-attachments');
+              if (!attachments) {
+                attachments = document.createElement('div');
+                attachments.className = 'message-attachments';
+                msg.wrap.appendChild(attachments);
+              }
               const note = document.createElement('div');
               note.className = 'attachment-note';
               note.textContent = row.attachments.map(item => `图片：${item.name || 'image'}`).join(' · ');
-              msg.bubble.appendChild(note);
+              attachments.appendChild(note);
             }
           }
         } finally {
@@ -4509,6 +4634,18 @@
         note.className = 'attachment-note';
         note.textContent = `图片：${img.alt || '已发送图片'}（刷新后不缓存预览）`;
         img.replaceWith(note);
+      }
+      const attachments = article.querySelector('.message-attachments');
+      if (attachments) {
+        for (const img of [...attachments.querySelectorAll('img.attachment-preview')]) {
+          const note = document.createElement('div');
+          note.className = 'attachment-note';
+          note.textContent = `图片：${img.alt || '已发送图片'}（刷新后不缓存预览）`;
+          clone.appendChild(note);
+        }
+        for (const note of [...attachments.querySelectorAll('.attachment-note')]) {
+          clone.appendChild(note.cloneNode(true));
+        }
       }
       const html = clone.innerHTML || '';
       return html.length > 30000 ? `${html.slice(0, 30000)}…` : html;
