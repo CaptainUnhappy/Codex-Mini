@@ -16,15 +16,32 @@ Codex Mini 是一个把手机浏览器连接到电脑上的 Codex Desktop 的轻
 
 ## 当前发布版本
 
-- 版本：v4.4.3（macOS 与 Windows 已对齐）
-- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[Codex Mini v4.4.3（Apple Silicon 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.3/CodexMini_v4.4.3_macOS_AppleSilicon.dmg)
-- 💻 macOS · Intel 芯片（x86）：[Codex Mini v4.4.3（Intel Mac 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.3/CodexMini_v4.4.3_macOS_Intel.dmg)
-- 🪟 Windows（10 / 11，64 位）：[Codex Mini v4.4.3（Windows 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.4.3/CodexMini_v4.4.3_Windows_Setup.exe)
+- 版本：v4.5.2（macOS 与 Windows 已对齐）
+- 🍎 macOS · Apple 芯片（M1/M2/M3/M4…）：[Codex Mini v4.5.2（Apple Silicon 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/CodexMini_v4.5.2_macOS_AppleSilicon.dmg)
+- 💻 macOS · Intel 芯片（x86）：[Codex Mini v4.5.2（Intel Mac 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/CodexMini_v4.5.2_macOS_Intel.dmg)
+- 🪟 Windows（10 / 11，64 位）：[Codex Mini v4.5.2（Windows 版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/CodexMini_v4.5.2_Windows_Setup.exe)
+- 🤖 **Android 手机专用**：[Codex Mini Android v1.3（安卓版）](https://github.com/CoimgRain/Codex-Mini/releases/download/codex-mini-v4.5.2/Codex-Mini-Android-v1.3.apk)
 - 图文安装说明：[macOS 版（PDF）](docs/Codex%20Mini%20Mac%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf) ｜ [Windows 版（PDF）](docs/Codex%20Mini%20Windows%20%E5%AE%89%E8%A3%85%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.pdf)
-- Release 页面：[codex-mini-v4.4.3](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.4.3)
-- 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node），装完从桌面或开始菜单启动
+- Release 页面：[codex-mini-v4.5.2](https://github.com/CoimgRain/Codex-Mini/releases/tag/codex-mini-v4.5.2)
+- 安装方式：macOS 打开 DMG 并把 `Codex Mini.app` 拖进 `Applications`；Windows 双击 EXE 安装（无需管理员权限、无需自己装 Node）；Android 下载 APK 后按系统提示安装
 
-### 最新版 V4.4.3
+### 最新版 V4.5.2
+
+- **项目列表更清爽**：项目里默认只展开前 5 条线程，后续线程可点「展开 / 收回」查看，列表更紧凑
+- **设置页更顺手**：状态与列表、外观、连接、电脑守护助手和 Bug 反馈入口重新整理，状态显示支持按住拖动排序
+- **附件显示更稳定**：文件、图片和 Markdown 附件统一沉到回复底部，减少正文中间误插文件卡片
+- **回复内容更干净**：隐藏内部交接摘要和过程提纲，避免大段非用户回复内容出现在手机端
+- **状态灯与守护显示修复**：状态灯闪烁更同步；Mac 守护模式里关闭线程卡片后会立即刷新显示
+
+### 最新版 V4.5.1
+
+- **Android 版单独提供 APK**：安卓手机用户请下载上方 `Codex-Mini-Android-v1.3.apk`，这是专门给安卓手机使用的安装包
+- **电脑守护助手设置**：Mac 版新增守护模式、超级守护模式和额外守护时间，MacBook 合盖后也能在任务运行时继续守护（仅 Mac，Pro 功能）
+- **附件预览全面补齐**：图片、Markdown、Word、压缩包等文件都进入带「返回 / 下载」的详情页，Markdown 长文档支持当前页滚动预览
+- **本机密码二次验证更稳定**：刷新页面或重新打开网页后重新验证，本次会话内不再反复打断
+- **回复状态和内部过程更干净**：修复引导过程重复、内部摘要外露、完成回复被后续中断误标等问题，Windows 同步修复二维码、状态解析和控制面板显示
+
+### V4.4.3
 
 - **打开即见聊天记录**：打开 App 或线程标题刷新时，会自动把当前线程的聊天记录加载出来，不再出现「已选中线程、聊天区却空白」
 - **待发送「引导」消息修复**：排队中的引导卡片现在会稳定显示，不再偶发不出现
@@ -75,15 +92,19 @@ QQ 群：**760669553**
 
 ## Windows 版本
 
-官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMini_v4.4.2_Windows_Setup.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
+官方 Windows 安装包已经随最新 Release 一起发布，文件名是 `CodexMini_v4.5.2_Windows_Setup.exe`。Windows 版支持在 Windows 桌面环境中运行 Codex Mini 控制面板，并保留手机网页控制、线程列表、CDP 受控 Codex、局域网访问和 Pro 外网入口等核心能力。
+
+## Android 版本
+
+Android 手机专用安装包已经随最新 Release 一起提供，文件名是 `Codex-Mini-Android-v1.3.apk`。如果你使用安卓手机，直接下载 APK 到手机安装即可；桌面端仍需在自己的 Mac 或 Windows 电脑上运行 Codex Mini。
 
 社区项目 [atuizz/codex-max](https://github.com/atuizz/codex-max) 仍可作为另一个 Windows 方向参考。
 
 ## 安装与使用
 
-1. 按系统下载对应的 `CodexMini_v4.4.2_macOS_AppleSilicon.dmg`、`CodexMini_v4.4.2_macOS_Intel.dmg` 或 `CodexMini_v4.4.2_Windows_Setup.exe`
+1. 按系统下载对应的 `CodexMini_v4.5.2_macOS_AppleSilicon.dmg`、`CodexMini_v4.5.2_macOS_Intel.dmg`、`CodexMini_v4.5.2_Windows_Setup.exe`；安卓手机用户下载 `Codex-Mini-Android-v1.3.apk`
 2. macOS 安装前完整删除旧 `Codex Mini Beta.app`，建议用第三方卸载工具清理旧 App、旧 LaunchAgent 和旧运行目录
-3. macOS 打开 DMG，把 `Codex Mini.app` 拖到 `Applications`；Windows 直接运行 EXE 安装
+3. macOS 打开 DMG，把 `Codex Mini.app` 拖到 `Applications`；Windows 直接运行 EXE 安装；Android 下载 APK 后按系统提示安装
 4. 打开 Codex Mini
 5. 同一 Wi‑Fi 下可直接使用局域网入口；离开局域网可使用 Pro 外网入口
 6. 建议把手机网页添加到主屏幕，体验更接近 App
